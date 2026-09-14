@@ -1,0 +1,6 @@
+{
+  "name": "Coiled Matrix",
+  "description": "Comprehensive coiled tubing engineering calculator featuring tubing limits, working envelopes, hydraulics, wellbore forces, reel capacity, and fatigue modeling.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
