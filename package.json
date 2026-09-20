@@ -13,8 +13,9 @@
     "lint": "tsc --noEmit",
     "electron:dev": "electron .",
     "electron:build": "vite build && electron-builder",
-    "build:exe": "vite build && electron-builder --win portable",
-    "build:installer": "vite build && electron-builder --win nsis"
+    "build:installer": "vite build && electron-builder --win nsis",
+    "build:portable": "vite build && electron-builder --win portable",
+    "build:exe": "vite build && electron-builder --win nsis portable"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

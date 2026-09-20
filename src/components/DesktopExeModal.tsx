@@ -76,7 +76,8 @@ if %errorlevel% neq 0 (
 
 echo.
 echo [3/3] Packaging standalone Windows .exe with Electron Builder...
-call npx electron-builder --win portable
+echo       Targets: NSIS Installer Setup & Portable Executable (.exe)
+call npx electron-builder --win nsis portable
 if %errorlevel% neq 0 (
     echo [ERROR] Electron packaging failed.
     pause
@@ -87,8 +88,12 @@ echo.
 echo =====================================================================
 echo  BUILD SUCCESSFUL!
 echo.
-echo  Your standalone Windows .exe has been created in:
+echo  Your standalone Windows installers have been generated in:
 echo    .\\release\\
+echo.
+echo  Output Files:
+echo    - Setup Installer : Coiled Tubing Engineering Suite-Setup-1.0.0.exe
+echo    - Portable App    : Coiled Tubing Engineering Suite-v1.0.0-Portable.exe
 echo =====================================================================
 echo.
 
