@@ -16,7 +16,10 @@ import { UnitConverterModal } from './components/UnitConverterModal';
 import { ResetConfirmModal } from './components/ResetConfirmModal';
 import { SensitivityAnalysisTab } from './components/SensitivityAnalysisTab';
 import { CalculationHistorySidebar } from './components/CalculationHistorySidebar';
+import { DesktopExeModal } from './components/DesktopExeModal';
 import { CoilMatrixLogo } from './components/CoilMatrixLogo';
+import { ToastProvider } from './context/ToastContext';
+import { EngineeringToastContainer } from './components/EngineeringToast';
 import { 
   Ruler, 
   ShieldCheck, 
@@ -66,9 +69,11 @@ export default function App() {
 
   const [isMtrModalOpen, setIsMtrModalOpen] = useState(false);
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+  const [printInitialMode, setPrintInitialMode] = useState<'single' | 'batch'>('single');
   const [isConverterOpen, setIsConverterOpen] = useState(false);
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isDesktopExeModalOpen, setIsDesktopExeModalOpen] = useState(false);
   const [resetKey, setResetKey] = useState(0);
 
   // Calculation & Simulation History with localStorage persistence
@@ -147,15 +152,17 @@ export default function App() {
     { id: 'specs', label: 'String Geometry', icon: Ruler, subtitle: 'Dimensions, Weights, Capacity' },
     { id: 'envelope', label: 'Working Envelope', icon: ShieldCheck, subtitle: 'von Mises & Limits' },
     { id: 'hydraulics', label: 'Hydraulics (Hydra)', icon: Droplets, subtitle: 'Circulation & Ito Reel Effect' },
-    { id: 'forces', label: 'Wellbore Forces', icon: Anchor, subtitle: '3D Simulation & Buckling' },
+    { id: 'forces', label: 'Wellbore Forces', icon: Anchor, subtitle: 'Well Diagram, 3D & Buckling' },
     { id: 'reel', label: 'Reel Spooling', icon: Disc, subtitle: 'Layers, Capacity & Weight' },
-    { id: 'fatigue', label: 'Fatigue & Life', icon: Flame, subtitle: 'Achilles Bending Cycles' },
+    { id: 'fatigue', label: 'Fatigue & Life', icon: Flame, subtitle: 'Job Types & Achilles LCF' },
     { id: 'sensitivity', label: 'Sensitivity Analysis', icon: Sliders, subtitle: 'Batch Sweeps & Limits' },
   ] as const;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
-      {/* Header with quick presets & unit controls */}
+    <ToastProvider>
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+        <EngineeringToastContainer />
+        {/* Header with quick presets & unit controls */}
       <Header
         currentString={currentString}
         onSelectString={handleSelectPresetString}
@@ -166,7 +173,11 @@ export default function App() {
         onOpenHistory={() => setIsHistoryOpen(true)}
         historyCount={history.length}
         onResetDefaults={() => setIsResetModalOpen(true)}
-        onPrint={() => setIsPrintModalOpen(true)}
+        onPrint={() => {
+          setPrintInitialMode('single');
+          setIsPrintModalOpen(true);
+        }}
+        onOpenDesktopExeModal={() => setIsDesktopExeModalOpen(true)}
         safetyFactor={safetyFactor}
         onSafetyFactorChange={handleSafetyFactorChange}
         showNominalOverlay={showNominalOverlay}
@@ -268,6 +279,7 @@ export default function App() {
                 ct={currentString}
                 onChangeString={setCurrentString}
                 unitSystem={unitSystem}
+                onNavigateToForces={() => setActiveTab('forces')}
               />
             )}
 
@@ -294,6 +306,7 @@ export default function App() {
               <WellboreForcesTab
                 ct={currentString}
                 unitSystem={unitSystem}
+                onUpdateString={setCurrentString}
               />
             )}
 
@@ -310,6 +323,7 @@ export default function App() {
                 ct={currentString}
                 unitSystem={unitSystem}
                 onSelectString={setCurrentString}
+                onUpdateString={setCurrentString}
               />
             )}
 
@@ -363,6 +377,18 @@ export default function App() {
         unitSystem={unitSystem}
         isOpen={isPrintModalOpen}
         onClose={() => setIsPrintModalOpen(false)}
+        history={history}
+        initialMode={printInitialMode}
+        onToggleBookmark={(id) => {
+          const updated = history.map((item) =>
+            item.id === id ? { ...item, isBookmarked: !item.isBookmarked } : item
+          );
+          handleUpdateHistory(updated);
+        }}
+        onBookmarkAll={() => {
+          const updated = history.map((item) => ({ ...item, isBookmarked: true }));
+          handleUpdateHistory(updated);
+        }}
       />
 
       {/* Standalone Oilfield Unit Converter Utility Sidebar */}
@@ -389,7 +415,18 @@ export default function App() {
         onLoadString={handleLoadStringFromHistory}
         history={history}
         onUpdateHistory={handleUpdateHistory}
+        onBatchPrint={() => {
+          setPrintInitialMode('batch');
+          setIsPrintModalOpen(true);
+        }}
       />
-    </div>
+
+      {/* Standalone Windows Desktop .EXE Packaging Modal */}
+      <DesktopExeModal
+        isOpen={isDesktopExeModalOpen}
+        onClose={() => setIsDesktopExeModalOpen(false)}
+      />
+      </div>
+    </ToastProvider>
   );
 }

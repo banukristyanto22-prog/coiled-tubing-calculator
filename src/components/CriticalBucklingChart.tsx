@@ -23,12 +23,15 @@ import {
   TrendingDown,
   Layers,
   ArrowDown,
+  ArrowUp,
   ArrowRight,
+  Minus,
   Sliders,
   CheckCircle2,
   HelpCircle,
   FileSpreadsheet
 } from 'lucide-react';
+import { FrictionTrendBadge } from './FrictionTrendBadge';
 import { CoiledTubingString, UnitSystem, WellboreForcesInput } from '../types/coiledTubing';
 import {
   calculateWellboreForces,
@@ -44,14 +47,21 @@ interface CriticalBucklingChartProps {
   ct: CoiledTubingString;
   forcesInput: WellboreForcesInput;
   unitSystem: UnitSystem;
+  highlightDepthFt?: number | null;
+  onSelectDepth?: (depthFt: number) => void;
+  onChangeFrictionCoefficient?: (frictionCoefficient: number) => void;
 }
 
 export const CriticalBucklingChart: React.FC<CriticalBucklingChartProps> = ({
   ct,
   forcesInput,
   unitSystem,
+  highlightDepthFt = null,
+  onSelectDepth,
+  onChangeFrictionCoefficient,
 }) => {
   const isMetric = unitSystem === 'metric';
+  const currentMu = forcesInput.frictionCoefficientCasing;
 
   // Chart configuration controls
   const [orientation, setOrientation] = useState<'profile' | 'horizontal'>('profile'); // profile = depth on Y-axis (vertical wellbore style)
@@ -376,6 +386,113 @@ export const CriticalBucklingChart: React.FC<CriticalBucklingChartProps> = ({
         </div>
       </div>
 
+      {/* Dynamic Pipe-to-Wellbore Friction Factor Slider Control */}
+      <div className="bg-slate-950/90 border border-cyan-500/25 rounded-xl p-3.5 space-y-3 shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2.5">
+            <div className="p-1.5 bg-cyan-500/10 border border-cyan-500/30 rounded-lg text-cyan-400">
+              <Sliders className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-white uppercase tracking-wider">
+                  Pipe-to-Wellbore Friction Factor (&mu;)
+                </span>
+                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-300 border border-cyan-700/50">
+                  Real-Time
+                </span>
+              </div>
+              <span className="text-[11px] text-slate-400">
+                Adjust friction &mu; to dynamically recalculate slack-off compressive forces, safety margins, and helical lockup depth
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 font-mono self-start sm:self-auto">
+            <span className="text-xs text-slate-400">&mu; =</span>
+            <span className="text-base font-bold text-cyan-300 px-2.5 py-0.5 bg-cyan-950/70 border border-cyan-500/40 rounded-lg shadow-inner">
+              {currentMu.toFixed(2)}
+            </span>
+            <FrictionTrendBadge frictionValue={currentMu} size="md" />
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1 text-[11px] font-mono font-semibold text-emerald-400 whitespace-nowrap" title="Low friction: Below typical well profile baseline (< 0.22)">
+              <ArrowDown className="w-3.5 h-3.5 stroke-[2.5]" />
+              <span>0.10</span>
+              <span className="text-[10px] font-sans text-emerald-400/80 hidden sm:inline">(Low)</span>
+            </div>
+            <input
+              type="range"
+              min="0.10"
+              max="0.40"
+              step="0.01"
+              value={currentMu}
+              onChange={(e) => {
+                const val = parseFloat(e.target.value);
+                if (!isNaN(val) && onChangeFrictionCoefficient) {
+                  onChangeFrictionCoefficient(Number(val.toFixed(2)));
+                }
+              }}
+              disabled={!onChangeFrictionCoefficient}
+              className="flex-1 h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-400 hover:accent-cyan-300 focus:outline-none focus:ring-1 focus:ring-cyan-400/50"
+              aria-label="Pipe-to-wellbore friction factor"
+            />
+            <div className="flex items-center gap-1 text-[11px] font-mono font-semibold text-rose-400 whitespace-nowrap" title="High friction: Above typical well profile baseline (> 0.26)">
+              <span className="text-[10px] font-sans text-rose-400/80 hidden sm:inline">(High)</span>
+              <span>0.40</span>
+              <ArrowUp className="w-3.5 h-3.5 stroke-[2.5]" />
+            </div>
+          </div>
+
+          <div className="flex justify-between items-center text-[10px] font-mono px-1">
+            <span className="flex items-center gap-1 text-emerald-400/90" title="Low friction reduces normal force & delays buckling">
+              <ArrowDown className="w-2.5 h-2.5 stroke-[2.5]" />
+              <span>Low Friction (OBM / Lubricated)</span>
+            </span>
+            <span className="text-slate-400 font-sans" title="Nominal cased wellbore profile baseline (0.22 - 0.26)">
+              Typical Well Profile Baseline: <span className="font-mono text-cyan-300 font-semibold">0.22 &ndash; 0.26</span>
+            </span>
+            <span className="flex items-center gap-1 text-amber-400/90" title="High friction increases normal drag & accelerates helical lockup">
+              <span>High Friction (Open Hole / Heavy Solids)</span>
+              <ArrowUp className="w-2.5 h-2.5 stroke-[2.5]" />
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-850">
+            <span className="text-[10px] uppercase font-semibold tracking-wider text-slate-500">
+              Quick Friction Presets:
+            </span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {[
+                { val: 0.12, label: '0.12 OBM/Lubricated' },
+                { val: 0.18, label: '0.18 Polymer' },
+                { val: 0.24, label: '0.24 Standard Csg' },
+                { val: 0.30, label: '0.30 High Drag' },
+                { val: 0.40, label: '0.40 Open Hole' },
+              ].map((preset) => (
+                <button
+                  key={preset.val}
+                  type="button"
+                  onClick={() => onChangeFrictionCoefficient && onChangeFrictionCoefficient(preset.val)}
+                  disabled={!onChangeFrictionCoefficient}
+                  className={`px-2 py-0.5 rounded text-[11px] font-mono transition-all border ${
+                    Math.abs(currentMu - preset.val) < 0.008
+                      ? 'bg-cyan-600 text-white font-bold border-cyan-400 shadow-sm'
+                      : 'bg-slate-900 hover:bg-slate-850 text-slate-300 border-slate-800'
+                  }`}
+                  title={`Set friction factor to ${preset.val}`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* KPI Highlight Strip */}
       {stats && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 my-4">
@@ -593,6 +710,23 @@ export const CriticalBucklingChart: React.FC<CriticalBucklingChartProps> = ({
                 />
               )}
 
+              {/* Probe / Marker Depth Reference Line */}
+              {highlightDepthFt !== null && (
+                <ReferenceLine
+                  y={Number((highlightDepthFt * depthMult).toFixed(0))}
+                  stroke="#38bdf8"
+                  strokeWidth={1.8}
+                  strokeDasharray="4 2"
+                  label={{
+                    value: `Probe: ${Math.round(highlightDepthFt * depthMult)} ${depthUnit}`,
+                    fill: '#38bdf8',
+                    position: 'insideTopRight',
+                    fontSize: 11,
+                    fontWeight: 600,
+                  }}
+                />
+              )}
+
               {/* Safe Buffer Curve (80% of Fcrit) */}
               {viewMode === 'magnitude' && showSafeBuffer && (
                 <Line
@@ -602,7 +736,10 @@ export const CriticalBucklingChart: React.FC<CriticalBucklingChartProps> = ({
                   strokeDasharray="4 4"
                   strokeWidth={1.5}
                   dot={false}
-                  isAnimationActive={false}
+                  isAnimationActive={true}
+                  animationDuration={350}
+                  animationEasing="ease-out"
+                  animationBegin={0}
                 />
               )}
 
@@ -615,7 +752,10 @@ export const CriticalBucklingChart: React.FC<CriticalBucklingChartProps> = ({
                   strokeWidth={2.5}
                   strokeDasharray="6 3"
                   dot={false}
-                  isAnimationActive={false}
+                  isAnimationActive={true}
+                  animationDuration={350}
+                  animationEasing="ease-out"
+                  animationBegin={0}
                 />
               )}
 
@@ -627,7 +767,10 @@ export const CriticalBucklingChart: React.FC<CriticalBucklingChartProps> = ({
                   stroke="#f43f5e"
                   strokeWidth={2.5}
                   dot={false}
-                  isAnimationActive={false}
+                  isAnimationActive={true}
+                  animationDuration={350}
+                  animationEasing="ease-out"
+                  animationBegin={0}
                 />
               )}
 
@@ -640,7 +783,10 @@ export const CriticalBucklingChart: React.FC<CriticalBucklingChartProps> = ({
                   strokeWidth={3}
                   dot={{ r: 2.5, fill: '#22d3ee', stroke: '#0891b2', strokeWidth: 1 }}
                   activeDot={{ r: 5, fill: '#38bdf8' }}
-                  isAnimationActive={false}
+                  isAnimationActive={true}
+                  animationDuration={350}
+                  animationEasing="ease-out"
+                  animationBegin={0}
                 />
               )}
             </ComposedChart>
@@ -650,6 +796,17 @@ export const CriticalBucklingChart: React.FC<CriticalBucklingChartProps> = ({
               data={chartData}
               margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
             >
+              <defs>
+                <linearGradient id="sinusoidalGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#fbbf24" stopOpacity={0.2} />
+                  <stop offset="95%" stopColor="#fbbf24" stopOpacity={0.02} />
+                </linearGradient>
+                <linearGradient id="helicalGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.22} />
+                  <stop offset="95%" stopColor="#f43f5e" stopOpacity={0.03} />
+                </linearGradient>
+              </defs>
+
               <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.6} />
 
               <XAxis
@@ -702,6 +859,49 @@ export const CriticalBucklingChart: React.FC<CriticalBucklingChartProps> = ({
                 />
               )}
 
+              {/* Probe / Marker Depth Reference Line */}
+              {highlightDepthFt !== null && (
+                <ReferenceLine
+                  x={Number((highlightDepthFt * depthMult).toFixed(0))}
+                  stroke="#38bdf8"
+                  strokeWidth={1.8}
+                  strokeDasharray="4 2"
+                  label={{
+                    value: `Probe: ${Math.round(highlightDepthFt * depthMult)} ${depthUnit}`,
+                    fill: '#38bdf8',
+                    position: 'insideTopRight',
+                    fontSize: 11,
+                    fontWeight: 600,
+                  }}
+                />
+              )}
+
+              {/* Gradient Shaded Buckling Zones (in Magnitude mode) */}
+              {viewMode === 'magnitude' && showHelical && (
+                <Area
+                  type="monotone"
+                  dataKey="helicalCrit"
+                  stroke="none"
+                  fill="url(#helicalGradient)"
+                  isAnimationActive={true}
+                  animationDuration={350}
+                  animationEasing="ease-out"
+                  animationBegin={0}
+                />
+              )}
+              {viewMode === 'magnitude' && showSinusoidal && (
+                <Area
+                  type="monotone"
+                  dataKey="sinusoidalCrit"
+                  stroke="none"
+                  fill="url(#sinusoidalGradient)"
+                  isAnimationActive={true}
+                  animationDuration={350}
+                  animationEasing="ease-out"
+                  animationBegin={0}
+                />
+              )}
+
               {/* Safe Buffer Curve */}
               {viewMode === 'magnitude' && showSafeBuffer && (
                 <Line
@@ -711,7 +911,10 @@ export const CriticalBucklingChart: React.FC<CriticalBucklingChartProps> = ({
                   strokeDasharray="4 4"
                   strokeWidth={1.5}
                   dot={false}
-                  isAnimationActive={false}
+                  isAnimationActive={true}
+                  animationDuration={350}
+                  animationEasing="ease-out"
+                  animationBegin={0}
                 />
               )}
 
@@ -724,7 +927,10 @@ export const CriticalBucklingChart: React.FC<CriticalBucklingChartProps> = ({
                   strokeWidth={2.5}
                   strokeDasharray="6 3"
                   dot={false}
-                  isAnimationActive={false}
+                  isAnimationActive={true}
+                  animationDuration={350}
+                  animationEasing="ease-out"
+                  animationBegin={0}
                 />
               )}
 
@@ -736,7 +942,10 @@ export const CriticalBucklingChart: React.FC<CriticalBucklingChartProps> = ({
                   stroke="#f43f5e"
                   strokeWidth={2.5}
                   dot={false}
-                  isAnimationActive={false}
+                  isAnimationActive={true}
+                  animationDuration={350}
+                  animationEasing="ease-out"
+                  animationBegin={0}
                 />
               )}
 
@@ -749,7 +958,10 @@ export const CriticalBucklingChart: React.FC<CriticalBucklingChartProps> = ({
                   strokeWidth={3}
                   dot={{ r: 2.5, fill: '#22d3ee', stroke: '#0891b2', strokeWidth: 1 }}
                   activeDot={{ r: 5, fill: '#38bdf8' }}
-                  isAnimationActive={false}
+                  isAnimationActive={true}
+                  animationDuration={350}
+                  animationEasing="ease-out"
+                  animationBegin={0}
                 />
               )}
             </ComposedChart>

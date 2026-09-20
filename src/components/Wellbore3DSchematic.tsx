@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { CoiledTubingString, UnitSystem, WellboreForcesInput } from '../types/coiledTubing';
 import { 
   ftToM, 
@@ -21,7 +21,12 @@ import {
   CheckCircle, 
   Activity,
   Compass,
-  Eye
+  Eye,
+  Target,
+  MapPin,
+  ChevronDown,
+  ChevronUp,
+  X
 } from 'lucide-react';
 
 interface Wellbore3DSchematicProps {
@@ -48,35 +53,58 @@ export const Wellbore3DSchematic: React.FC<Wellbore3DSchematicProps> = ({
   const [viewMode, setViewMode] = useState<'3D' | '2D'>('3D');
   const [showFluidJet, setShowFluidJet] = useState<boolean>(true);
 
+  // Clickable Depth Marker State for pinpoint force inspection
+  const [markerDepthFt, setMarkerDepthFt] = useState<number | null>(Math.round(maxDepth * 0.5));
+  const [isMarkerProbeOpen, setIsMarkerProbeOpen] = useState<boolean>(true);
+  const [hoverDepthFt, setHoverDepthFt] = useState<number | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  // Smooth transition animation state for BHA icon when toggling between RIH and POOH
+  const [bhaModePulse, setBhaModePulse] = useState<{ mode: 'RIH' | 'POOH'; id: number } | null>(null);
+  const smoothVelRef = useRef<number>(0);
+  const lastOpModeRef = useRef<'RIH' | 'POOH' | 'STANDBY'>('RIH');
+
+  useEffect(() => {
+    if (opMode === 'RIH' || opMode === 'POOH') {
+      if (lastOpModeRef.current !== opMode) {
+        setBhaModePulse({ mode: opMode, id: Date.now() });
+        const clearPulse = setTimeout(() => setBhaModePulse(null), 1800);
+        lastOpModeRef.current = opMode;
+        return () => clearTimeout(clearPulse);
+      }
+    }
+    lastOpModeRef.current = opMode;
+  }, [opMode]);
+
   // Animation loop
   const lastTimeRef = useRef<number>(performance.now());
   const requestRef = useRef<number | null>(null);
 
   useEffect(() => {
     const animate = (time: number) => {
-      const deltaSec = (time - lastTimeRef.current) / 1000;
+      const deltaSec = Math.min((time - lastTimeRef.current) / 1000, 0.1);
       lastTimeRef.current = time;
 
-      if (opMode === 'RIH') {
+      // Kinematic velocity smoothing for realistic momentum and smooth mode switching
+      const targetDir = opMode === 'RIH' ? 1 : opMode === 'POOH' ? -1 : 0;
+      const targetVel = targetDir * (speedFtPerMin / 60) * (maxDepth / 60);
+      const easeRate = 4.5;
+      const currentVel = smoothVelRef.current;
+      const newVel = currentVel + (targetVel - currentVel) * Math.min(1, deltaSec * easeRate);
+      smoothVelRef.current = newVel;
+
+      if (Math.abs(newVel) > 0.01) {
         setCurrentDepthFt((prev) => {
-          // Scale speed visually so traverse takes a reasonable ~20s at 60 ft/min
-          const step = (speedFtPerMin / 60) * (maxDepth / 60) * deltaSec;
-          const next = prev + step;
-          if (next >= maxDepth) {
+          const next = prev + newVel * deltaSec;
+          if (next >= maxDepth && opMode === 'RIH') {
             setOpMode('STANDBY');
             return maxDepth;
           }
-          return next;
-        });
-      } else if (opMode === 'POOH') {
-        setCurrentDepthFt((prev) => {
-          const step = (speedFtPerMin / 60) * (maxDepth / 60) * deltaSec;
-          const next = prev - step;
-          if (next <= 0) {
+          if (next <= 0 && opMode === 'POOH') {
             setOpMode('STANDBY');
             return 0;
           }
-          return next;
+          return Math.max(0, Math.min(maxDepth, next));
         });
       }
 
@@ -252,6 +280,136 @@ export const Wellbore3DSchematic: React.FC<Wellbore3DSchematicProps> = ({
   // Reel rotation angle based on depth
   const reelRotationDeg = (currentDepthFt / 10) % 360;
 
+  // Helper to calculate exact 3D forces, buckling status, and geometry at any specified depth
+  const get3DForcesAtDepth = (depthFt: number, coords?: { dispFrac: number; tvdFrac: number } | null) => {
+    const profilePoints = results.weightProfile;
+    if (!profilePoints || profilePoints.length === 0) return null;
+
+    const frac = Math.max(0, Math.min(1, depthFt / maxDepth));
+    const targetIdx = frac * (profilePoints.length - 1);
+    const lowIdx = Math.floor(targetIdx);
+    const highIdx = Math.min(profilePoints.length - 1, Math.ceil(targetIdx));
+    const ratio = targetIdx - lowIdx;
+
+    const low = profilePoints[lowIdx];
+    const high = profilePoints[highIdx];
+
+    const pickupLbf = low.pickupLbf + ratio * (high.pickupLbf - low.pickupLbf);
+    const slackoffLbf = low.slackoffLbf + ratio * (high.slackoffLbf - low.slackoffLbf);
+    const neutralLbf = low.neutralLbf + ratio * (high.neutralLbf - low.neutralLbf);
+    const criticalBucklingLbf = low.criticalBucklingLbf + ratio * (high.criticalBucklingLbf - low.criticalBucklingLbf);
+
+    const isHelical = slackoffLbf < 0 && Math.abs(slackoffLbf) > criticalBucklingLbf;
+    const isSinusoidal = slackoffLbf < 0 && Math.abs(slackoffLbf) > criticalBucklingLbf * 0.707;
+
+    const bucklingStatus = isHelical
+      ? 'Helical Buckling (Lockup)'
+      : isSinusoidal
+      ? 'Sinusoidal Snaking'
+      : 'Stable Elastic (Safe)';
+
+    const statusColor: 'rose' | 'amber' | 'emerald' = isHelical ? 'rose' : isSinusoidal ? 'amber' : 'emerald';
+
+    let localIncDeg = inclination;
+    let localTvdFt = Math.round(coords ? coords.tvdFrac * maxDepth : depthFt);
+
+    if (hasCustomSurvey && forcesInput.surveyStations) {
+      const interp = interpolateSurveyAtDepth(forcesInput.surveyStations, depthFt);
+      localIncDeg = interp.inclinationDeg;
+      localTvdFt = Math.round(interp.trueVerticalDepthFt);
+    }
+
+    return {
+      depthFt,
+      pickupLbf,
+      slackoffLbf,
+      neutralLbf,
+      criticalBucklingLbf,
+      bucklingStatus,
+      statusColor,
+      localIncDeg,
+      localTvdFt,
+    };
+  };
+
+  // Marker coordinates along wellbore
+  const markerFraction = markerDepthFt !== null ? Math.max(0, Math.min(1, markerDepthFt / maxDepth)) : null;
+  const markerCoords = markerFraction !== null ? getWellCoords(markerFraction) : null;
+  const markerPoint = markerCoords ? projectPoint(markerCoords.dispFrac, markerCoords.tvdFrac) : null;
+
+  // Hover coordinates along wellbore
+  const hoverFraction = hoverDepthFt !== null ? Math.max(0, Math.min(1, hoverDepthFt / maxDepth)) : null;
+  const hoverCoords = hoverFraction !== null ? getWellCoords(hoverFraction) : null;
+  const hoverPoint = hoverCoords ? projectPoint(hoverCoords.dispFrac, hoverCoords.tvdFrac) : null;
+
+  // Exact calculated forces at marked depth
+  const markerForces = useMemo(() => {
+    if (markerDepthFt === null) return null;
+    return get3DForcesAtDepth(markerDepthFt, markerCoords);
+  }, [markerDepthFt, results, maxDepth, inclination, hasCustomSurvey, forcesInput.surveyStations, markerCoords]);
+
+  // Exact calculated forces at hovered cursor depth
+  const hoverForces = useMemo(() => {
+    if (hoverDepthFt === null) return null;
+    return get3DForcesAtDepth(hoverDepthFt, hoverCoords);
+  }, [hoverDepthFt, results, maxDepth, inclination, hasCustomSurvey, forcesInput.surveyStations, hoverCoords]);
+
+  // Mouse move handler on SVG canvas to track hover depth and telemetry
+  const handleSvgMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (!svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const moveX = ((e.clientX - rect.left) / rect.width) * svgWidth;
+    const moveY = ((e.clientY - rect.top) / rect.height) * svgHeight;
+
+    let closestDist = Infinity;
+    let closestDepth = 0;
+
+    trajectoryPoints.forEach((p) => {
+      const dist = Math.hypot(p.x - moveX, p.y - moveY);
+      if (dist < closestDist) {
+        closestDist = dist;
+        closestDepth = p.frac * maxDepth;
+      }
+    });
+
+    if (closestDist < 140) {
+      setHoverDepthFt(Math.round(closestDepth));
+    } else if (moveY >= wellheadY && moveY <= svgHeight - 20) {
+      const frac = Math.max(0, Math.min(1, (moveY - wellheadY) / (svgHeight - wellheadY - 40)));
+      setHoverDepthFt(Math.round(frac * maxDepth));
+    } else {
+      setHoverDepthFt(null);
+    }
+  };
+
+  // Click handler on SVG canvas to place or move depth marker pin
+  const handleSvgClick = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (!svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const clickX = ((e.clientX - rect.left) / rect.width) * svgWidth;
+    const clickY = ((e.clientY - rect.top) / rect.height) * svgHeight;
+
+    let closestDist = Infinity;
+    let closestDepth = 0;
+
+    trajectoryPoints.forEach((p) => {
+      const dist = Math.hypot(p.x - clickX, p.y - clickY);
+      if (dist < closestDist) {
+        closestDist = dist;
+        closestDepth = p.frac * maxDepth;
+      }
+    });
+
+    if (closestDist < 120) {
+      setMarkerDepthFt(Math.round(closestDepth));
+      setIsMarkerProbeOpen(true);
+    } else if (clickY >= wellheadY) {
+      const frac = Math.max(0, Math.min(1, (clickY - wellheadY) / (svgHeight - wellheadY - 40)));
+      setMarkerDepthFt(Math.round(frac * maxDepth));
+      setIsMarkerProbeOpen(true);
+    }
+  };
+
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg">
       {/* Top Header & Interactive Mode Bar */}
@@ -326,8 +484,12 @@ export const Wellbore3DSchematic: React.FC<Wellbore3DSchematicProps> = ({
 
         {/* SVG Well Schematic & CT String */}
         <svg
+          ref={svgRef}
+          onClick={handleSvgClick}
+          onMouseMove={handleSvgMouseMove}
+          onMouseLeave={() => setHoverDepthFt(null)}
           viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-          className="w-full h-full"
+          className="w-full h-full cursor-crosshair"
           style={{ transform: viewMode === '3D' ? 'perspective(900px) rotateX(8deg)' : 'none' }}
         >
           <defs>
@@ -605,9 +767,53 @@ export const Wellbore3DSchematic: React.FC<Wellbore3DSchematicProps> = ({
 
           {/* Bottom Hole Assembly (BHA) Tip & Jet Nozzle */}
           {depthFraction > 0.005 && (
-            <g transform={`translate(${tipPoint.x}, ${tipPoint.y})`}>
+            <g
+              id="bha3dTip"
+              transform={`translate(${tipPoint.x}, ${tipPoint.y})`}
+              style={{ transition: 'transform 0.12s cubic-bezier(0.25, 0.8, 0.45, 1)' }}
+            >
+              {/* Mode Transition Shockwave Beacon */}
+              {bhaModePulse && (
+                <g className="pointer-events-none">
+                  <circle
+                    cx="0"
+                    cy="0"
+                    r="24"
+                    fill="none"
+                    stroke={bhaModePulse.mode === 'RIH' ? '#22c55e' : '#f59e0b'}
+                    strokeWidth="2"
+                    strokeDasharray="3 3"
+                    className="animate-ping opacity-80"
+                  />
+                  <circle
+                    cx="0"
+                    cy="0"
+                    r="15"
+                    fill={bhaModePulse.mode === 'RIH' ? '#22c55e' : '#f59e0b'}
+                    fillOpacity="0.25"
+                    className="animate-pulse"
+                  />
+                </g>
+              )}
+
               {/* BHA Tool Outer Body */}
-              <circle cx="0" cy="0" r="5" fill="#f59e0b" stroke="#fff" strokeWidth="1.5" />
+              <circle
+                cx="0"
+                cy="0"
+                r="6"
+                fill={opMode === 'RIH' ? '#10b981' : opMode === 'POOH' ? '#f59e0b' : '#38bdf8'}
+                stroke="#fff"
+                strokeWidth="1.5"
+                style={{ transition: 'fill 0.4s ease' }}
+              />
+
+              {/* Directional motion arrow on BHA tip that flips on toggle */}
+              <g
+                transform={`rotate(${opMode === 'POOH' ? 180 : 0})`}
+                style={{ transition: 'transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)' }}
+              >
+                <path d="M 0 3 L -2 -1 L 2 -1 Z" fill="#ffffff" />
+              </g>
               
               {/* Fluid jet wash spray while RIH */}
               {showFluidJet && opMode === 'RIH' && (
@@ -623,8 +829,187 @@ export const Wellbore3DSchematic: React.FC<Wellbore3DSchematicProps> = ({
                 </g>
               )}
 
+              {/* Dynamic Mode Badge Callout */}
+              <g transform="translate(12, -10)">
+                <rect
+                  x="0"
+                  y="0"
+                  width="72"
+                  height="18"
+                  rx="4"
+                  fill="#020617"
+                  stroke={opMode === 'RIH' ? '#10b981' : opMode === 'POOH' ? '#f59e0b' : '#38bdf8'}
+                  strokeWidth="1.2"
+                  style={{ transition: 'stroke 0.4s ease' }}
+                />
+                <text
+                  x="36"
+                  y="12"
+                  textAnchor="middle"
+                  fill={opMode === 'RIH' ? '#86efac' : opMode === 'POOH' ? '#fde68a' : '#7dd3fc'}
+                  className="font-mono text-[9px] font-bold"
+                >
+                  {opMode === 'RIH' ? 'RIH ▾' : opMode === 'POOH' ? 'POOH ▴' : 'STANDBY'}
+                </text>
+              </g>
+
               {/* Tooltip Depth Beacon */}
-              <circle cx="0" cy="0" r="10" fill="none" stroke="#22d3ee" strokeWidth="1" strokeDasharray="2 2" className="animate-ping" />
+              <circle
+                cx="0"
+                cy="0"
+                r="10"
+                fill="none"
+                stroke={opMode === 'RIH' ? '#34d399' : opMode === 'POOH' ? '#fbbf24' : '#22d3ee'}
+                strokeWidth="1"
+                strokeDasharray="2 2"
+                className="animate-ping"
+              />
+            </g>
+          )}
+
+          {/* Dynamic Cursor Hover Reticle and Telemetry Badge */}
+          {hoverPoint && hoverForces && hoverDepthFt !== markerDepthFt && (
+            <g
+              transform={`translate(${hoverPoint.x}, ${hoverPoint.y})`}
+              className="pointer-events-none select-none"
+            >
+              {/* Pulsing Target Ring */}
+              <circle
+                cx="0"
+                cy="0"
+                r="13"
+                fill="none"
+                stroke={
+                  hoverForces.statusColor === 'emerald'
+                    ? '#34d399'
+                    : hoverForces.statusColor === 'amber'
+                    ? '#fbbf24'
+                    : '#fb7185'
+                }
+                strokeWidth="1.5"
+                strokeDasharray="3 2"
+                className="animate-pulse"
+              />
+              {/* Target Reticle Core */}
+              <circle
+                cx="0"
+                cy="0"
+                r="5"
+                fill={
+                  hoverForces.statusColor === 'emerald'
+                    ? '#059669'
+                    : hoverForces.statusColor === 'amber'
+                    ? '#d97706'
+                    : '#e11d48'
+                }
+                stroke="#ffffff"
+                strokeWidth="1.5"
+              />
+              <line x1="-15" y1="0" x2="-7" y2="0" stroke="#f8fafc" strokeWidth="1.5" />
+              <line x1="7" y1="0" x2="15" y2="0" stroke="#f8fafc" strokeWidth="1.5" />
+              <line x1="0" y1="-15" x2="0" y2="-7" stroke="#f8fafc" strokeWidth="1.5" />
+              <line x1="0" y1="7" x2="0" y2="15" stroke="#f8fafc" strokeWidth="1.5" />
+
+              {/* Floating Dynamic Hover Telemetry Card */}
+              <g transform="translate(18, -48)">
+                <rect
+                  x="0"
+                  y="0"
+                  width="180"
+                  height="70"
+                  rx="7"
+                  fill="#020617"
+                  fillOpacity="0.96"
+                  stroke={
+                    hoverForces.statusColor === 'emerald'
+                      ? '#059669'
+                      : hoverForces.statusColor === 'amber'
+                      ? '#d97706'
+                      : '#e11d48'
+                  }
+                  strokeWidth="1.6"
+                />
+                {/* Header tag */}
+                <rect
+                  x="0"
+                  y="0"
+                  width="180"
+                  height="18"
+                  rx="7"
+                  fill={
+                    hoverForces.statusColor === 'emerald'
+                      ? '#064e3b'
+                      : hoverForces.statusColor === 'amber'
+                      ? '#78350f'
+                      : '#881337'
+                  }
+                  fillOpacity="0.8"
+                />
+                <text x="7" y="13" fill="#ffffff" fontSize="9" fontWeight="bold" fontFamily="system-ui">
+                  CURSOR: {Math.round(isMetric ? ftToM(hoverForces.depthFt) : hoverForces.depthFt).toLocaleString()} {isMetric ? 'm' : 'ft'}
+                </text>
+                <text x="172" y="13" textAnchor="end" fill="#cbd5e1" fontSize="8" fontFamily="JetBrains Mono">
+                  {hoverForces.localIncDeg.toFixed(0)}° Inc
+                </text>
+
+                {/* Tension & Buckling metrics */}
+                <text x="7" y="32" fill="#f59e0b" fontSize="8.5" fontFamily="JetBrains Mono" fontWeight="bold">
+                  POOH: {isMetric ? `${Math.round(lbfToKn(hoverForces.pickupLbf))} kN` : `${Math.round(hoverForces.pickupLbf).toLocaleString()} lbf`}
+                </text>
+                <text x="7" y="46" fill={hoverForces.slackoffLbf < 0 ? '#c084fc' : '#34d399'} fontSize="8.5" fontFamily="JetBrains Mono" fontWeight="bold">
+                  RIH: {isMetric ? `${Math.round(lbfToKn(hoverForces.slackoffLbf))} kN` : `${Math.round(hoverForces.slackoffLbf).toLocaleString()} lbf`}
+                </text>
+                <text
+                  x="7"
+                  y="60"
+                  fill={
+                    hoverForces.statusColor === 'emerald'
+                      ? '#6ee7b7'
+                      : hoverForces.statusColor === 'amber'
+                      ? '#fde68a'
+                      : '#fca5a5'
+                  }
+                  fontSize="8"
+                  fontFamily="system-ui"
+                  fontWeight="bold"
+                >
+                  Status: {hoverForces.bucklingStatus}
+                </text>
+              </g>
+            </g>
+          )}
+
+          {/* Clickable Depth Location Force Marker Pin on Wellbore Path */}
+          {markerPoint && markerForces && (
+            <g
+              transform={`translate(${markerPoint.x}, ${markerPoint.y})`}
+              className="cursor-pointer"
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsMarkerProbeOpen(true);
+              }}
+            >
+              {/* Outer pulsing beacon ring */}
+              <circle cx="0" cy="0" r="14" fill="none" stroke="#22d3ee" strokeWidth="1.5" className="animate-ping opacity-75" />
+              {/* Center reticle */}
+              <circle cx="0" cy="0" r="7" fill="#020617" stroke="#38bdf8" strokeWidth="2" />
+              <circle cx="0" cy="0" r="2.5" fill="#38bdf8" />
+              <line x1="-11" y1="0" x2="11" y2="0" stroke="#38bdf8" strokeWidth="1.5" />
+              <line x1="0" y1="-11" x2="0" y2="11" stroke="#38bdf8" strokeWidth="1.5" />
+
+              {/* Floating Mini Forces Badge on canvas */}
+              <g transform="translate(14, -28)">
+                <rect x="0" y="0" width="138" height="46" rx="6" fill="#020617" fillOpacity="0.95" stroke="#0891b2" strokeWidth="1.5" />
+                <text x="6" y="13" fill="#38bdf8" fontSize="8.5" fontWeight="bold" fontFamily="JetBrains Mono">
+                  MD: {Math.round(isMetric ? ftToM(markerForces.depthFt) : markerForces.depthFt).toLocaleString()} {isMetric ? 'm' : 'ft'}
+                </text>
+                <text x="6" y="26" fill="#f59e0b" fontSize="8" fontFamily="JetBrains Mono">
+                  POOH: {isMetric ? `${Math.round(lbfToKn(markerForces.pickupLbf))} kN` : `${Math.round(markerForces.pickupLbf).toLocaleString()} lbf`}
+                </text>
+                <text x="6" y="38" fill={markerForces.slackoffLbf < 0 ? '#c084fc' : '#34d399'} fontSize="8" fontFamily="JetBrains Mono">
+                  RIH: {isMetric ? `${Math.round(lbfToKn(markerForces.slackoffLbf))} kN` : `${Math.round(markerForces.slackoffLbf).toLocaleString()} lbf`}
+                </text>
+              </g>
             </g>
           )}
         </svg>
@@ -703,10 +1088,15 @@ export const Wellbore3DSchematic: React.FC<Wellbore3DSchematicProps> = ({
           <div className="flex items-center gap-2 w-full lg:w-auto">
             {/* RIH Button */}
             <button
-              onClick={() => setOpMode('RIH')}
+              onClick={() => {
+                if (currentDepthFt >= maxDepth - 50) {
+                  setCurrentDepthFt(0);
+                }
+                setOpMode('RIH');
+              }}
               className={`flex-1 sm:flex-none px-4 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all border ${
                 opMode === 'RIH'
-                  ? 'bg-emerald-600 text-white border-emerald-400 shadow-lg shadow-emerald-950/60'
+                  ? 'bg-emerald-600 text-white border-emerald-400 shadow-lg shadow-emerald-950/60 ring-1 ring-emerald-400/50'
                   : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-emerald-500/50 hover:text-emerald-400'
               }`}
             >
@@ -729,10 +1119,15 @@ export const Wellbore3DSchematic: React.FC<Wellbore3DSchematicProps> = ({
 
             {/* POOH Button */}
             <button
-              onClick={() => setOpMode('POOH')}
+              onClick={() => {
+                if (currentDepthFt <= 100) {
+                  setCurrentDepthFt(maxDepth * 0.75);
+                }
+                setOpMode('POOH');
+              }}
               className={`flex-1 sm:flex-none px-4 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all border ${
                 opMode === 'POOH'
-                  ? 'bg-amber-600 text-white border-amber-400 shadow-lg shadow-amber-950/60'
+                  ? 'bg-amber-600 text-white border-amber-400 shadow-lg shadow-amber-950/60 ring-1 ring-amber-400/50'
                   : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-amber-500/50 hover:text-amber-400'
               }`}
             >
@@ -741,21 +1136,89 @@ export const Wellbore3DSchematic: React.FC<Wellbore3DSchematicProps> = ({
             </button>
           </div>
 
-          {/* Speed Selector */}
-          <div className="flex items-center gap-2 w-full lg:w-auto justify-between lg:justify-end">
-            <span className="text-xs text-slate-400 font-medium">Running Speed:</span>
-            <div className="flex bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
-              {[30, 60, 120].map((spd) => (
+          {/* Animation Speed Slider & Observation Mode Control */}
+          <div
+            id="simulation-speed-slider-3d-container"
+            className="flex items-center gap-2.5 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-[11px] shadow-sm w-full lg:w-auto justify-between"
+          >
+            <div className="flex items-center gap-1.5 text-slate-300 font-semibold shrink-0">
+              <Gauge className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Speed:</span>
+            </div>
+
+            {/* Continuous Range Slider */}
+            <div className="flex items-center gap-2">
+              <input
+                id="sim-speed-slider-3d"
+                type="range"
+                min="10"
+                max="300"
+                step="5"
+                value={speedFtPerMin}
+                onChange={(e) => setSpeedFtPerMin(Number(e.target.value))}
+                className="w-20 sm:w-28 md:w-36 accent-cyan-400 cursor-pointer h-1.5 bg-slate-800 rounded-lg hover:bg-slate-700 transition-all"
+                title={`Adjust animation speed: ${speedFtPerMin} ft/min (${Math.round(ftToM(speedFtPerMin))} m/min)`}
+              />
+
+              <div className="flex items-center gap-1 shrink-0">
+                <span className="font-mono font-bold text-cyan-300 bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800 min-w-[56px] text-right">
+                  {speedFtPerMin}
+                  <span className="text-[9px] font-normal text-slate-400 ml-0.5">
+                    {isMetric ? 'ft/m' : 'ft/m'}
+                  </span>
+                </span>
+
+                {/* Observation Mode Badge */}
+                <span
+                  className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider border hidden sm:inline-block ${
+                    speedFtPerMin <= 30
+                      ? 'bg-purple-950/80 text-purple-300 border-purple-800'
+                      : speedFtPerMin <= 90
+                      ? 'bg-blue-950/80 text-blue-300 border-blue-800'
+                      : speedFtPerMin <= 180
+                      ? 'bg-emerald-950/80 text-emerald-300 border-emerald-800'
+                      : 'bg-amber-950/80 text-amber-300 border-amber-800'
+                  }`}
+                  title={
+                    speedFtPerMin <= 30
+                      ? 'Slow-Motion: High precision for observing curve transitions and casing shoes'
+                      : speedFtPerMin <= 90
+                      ? 'Inspection Rate: Steady string ingress'
+                      : speedFtPerMin <= 180
+                      ? 'Standard Operational Running Speed'
+                      : 'Rapid Transit Rate'
+                  }
+                >
+                  {speedFtPerMin <= 30
+                    ? 'Slow-Mo'
+                    : speedFtPerMin <= 90
+                    ? 'Inspect'
+                    : speedFtPerMin <= 180
+                    ? 'Standard'
+                    : 'Fast'}
+                </span>
+              </div>
+            </div>
+
+            {/* Quick Snap Presets */}
+            <div className="hidden xl:flex items-center gap-1 border-l border-slate-800 pl-2">
+              {[
+                { label: 'Crawl', spd: 20 },
+                { label: '60', spd: 60 },
+                { label: '120', spd: 120 },
+                { label: '240', spd: 240 },
+              ].map((p) => (
                 <button
-                  key={spd}
-                  onClick={() => setSpeedFtPerMin(spd)}
-                  className={`px-2.5 py-1 rounded font-mono text-[11px] transition-colors ${
-                    speedFtPerMin === spd
+                  key={p.spd}
+                  type="button"
+                  onClick={() => setSpeedFtPerMin(p.spd)}
+                  className={`px-1.5 py-0.5 rounded font-mono text-[10px] font-medium transition-colors ${
+                    speedFtPerMin === p.spd
                       ? 'bg-cyan-600 text-white font-bold'
-                      : 'text-slate-400 hover:text-slate-200'
+                      : 'bg-slate-900 text-slate-400 hover:text-slate-200'
                   }`}
                 >
-                  {isMetric ? `${Math.round(spd * 0.3048)} m/m` : `${spd} ft/m`}
+                  {p.label}
                 </button>
               ))}
             </div>
@@ -767,7 +1230,7 @@ export const Wellbore3DSchematic: React.FC<Wellbore3DSchematicProps> = ({
                 setOpMode('STANDBY');
               }}
               title="Reset to Surface (0 ft)"
-              className="p-2 bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 rounded-lg transition-colors"
+              className="p-1.5 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 rounded-lg transition-colors"
             >
               <RotateCcw className="w-3.5 h-3.5" />
             </button>
@@ -808,6 +1271,181 @@ export const Wellbore3DSchematic: React.FC<Wellbore3DSchematicProps> = ({
             <span>{Math.round(maxDepth * eocFraction).toLocaleString()} ft (EOC)</span>
             <span>{maxDepth.toLocaleString()} ft (TD)</span>
           </div>
+        </div>
+
+        {/* Depth Location Forces Probe Panel (Clickable Depth Marker Telemetry) */}
+        <div className="p-3.5 bg-slate-950 border border-cyan-800/60 rounded-xl space-y-3 shadow-inner">
+          <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 bg-cyan-950 border border-cyan-700/50 rounded-lg text-cyan-400">
+                <Target className="w-4 h-4" />
+              </div>
+              <div>
+                <span className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                  Clickable Depth Marker &bull; Calculated Forces Probe
+                </span>
+                <p className="text-[10px] text-slate-400">
+                  Click anywhere on the wellbore canvas to place marker, or drag slider below
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {markerDepthFt !== null && (
+                <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-700">
+                  {Math.round(isMetric ? ftToM(markerDepthFt) : markerDepthFt).toLocaleString()} {isMetric ? 'm' : 'ft'}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => setIsMarkerProbeOpen(!isMarkerProbeOpen)}
+                className="text-slate-400 hover:text-white p-1 rounded bg-slate-900 border border-slate-800"
+                title={isMarkerProbeOpen ? 'Collapse probe' : 'Expand probe'}
+              >
+                {isMarkerProbeOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+          </div>
+
+          {isMarkerProbeOpen && (
+            <div className="space-y-3 pt-1">
+              {/* Probe Depth Input & Slider */}
+              <div className="flex flex-col sm:flex-row items-center gap-3">
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <span className="text-xs text-slate-400 font-medium flex items-center gap-1 shrink-0">
+                    <MapPin className="w-3.5 h-3.5 text-cyan-400" />
+                    Marker Depth:
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min="0"
+                      max={maxDepth}
+                      step="50"
+                      value={markerDepthFt !== null ? Math.round(isMetric ? ftToM(markerDepthFt) : markerDepthFt) : ''}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        if (!isNaN(val)) {
+                          setMarkerDepthFt(isMetric ? val / 0.3048 : val);
+                        }
+                      }}
+                      placeholder="Depth..."
+                      className="w-24 px-2 py-1 text-right font-mono text-xs bg-slate-900 border border-slate-700 rounded text-cyan-200 focus:outline-none focus:border-cyan-500"
+                    />
+                    <span className="text-xs font-mono text-slate-400">{isMetric ? 'm' : 'ft'}</span>
+                  </div>
+                </div>
+
+                {/* Probe Range Slider */}
+                <input
+                  type="range"
+                  min="0"
+                  max={maxDepth}
+                  step="25"
+                  value={markerDepthFt ?? 0}
+                  onChange={(e) => setMarkerDepthFt(Number(e.target.value))}
+                  className="flex-1 w-full accent-cyan-400 cursor-pointer h-1.5 bg-slate-800 rounded-lg hover:bg-slate-700"
+                />
+
+                {/* Quick Buttons */}
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setMarkerDepthFt(Math.round(currentDepthFt))}
+                    className="px-2 py-1 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 rounded text-[10px] font-medium transition-colors"
+                    title="Move marker to current CT tip depth"
+                  >
+                    Sync to CT Tip
+                  </button>
+                  {markerDepthFt !== null && (
+                    <button
+                      type="button"
+                      onClick={() => setMarkerDepthFt(null)}
+                      className="p-1 text-slate-400 hover:text-rose-400 rounded hover:bg-slate-900 transition-colors"
+                      title="Clear depth marker"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Exact Calculated Forces Telemetry Grid at Marker Depth */}
+              {markerForces ? (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+                  {/* Pick-Up Force Card */}
+                  <div className="bg-slate-900/90 p-2.5 rounded-lg border border-amber-500/30">
+                    <span className="text-[10px] text-slate-400 uppercase font-semibold block">
+                      POOH Tension (Pick-up)
+                    </span>
+                    <div className="text-sm font-mono font-bold text-amber-300 mt-0.5">
+                      {isMetric
+                        ? `${Math.round(lbfToKn(markerForces.pickupLbf))} kN`
+                        : `${Math.round(markerForces.pickupLbf).toLocaleString()} lbf`}
+                    </div>
+                    <span className="text-[9px] text-slate-500">Includes cumulative upward drag</span>
+                  </div>
+
+                  {/* Slack-Off Force Card */}
+                  <div className="bg-slate-900/90 p-2.5 rounded-lg border border-emerald-500/30">
+                    <span className="text-[10px] text-slate-400 uppercase font-semibold block">
+                      RIH Load (Slack-off)
+                    </span>
+                    <div className={`text-sm font-mono font-bold mt-0.5 ${markerForces.slackoffLbf < 0 ? 'text-purple-300' : 'text-emerald-300'}`}>
+                      {isMetric
+                        ? `${Math.round(lbfToKn(markerForces.slackoffLbf))} kN`
+                        : `${Math.round(markerForces.slackoffLbf).toLocaleString()} lbf`}
+                    </div>
+                    <span className="text-[9px] text-slate-500">
+                      {markerForces.slackoffLbf < 0 ? 'Compressive injector snubber' : 'Tension on injector'}
+                    </span>
+                  </div>
+
+                  {/* Neutral Load Card */}
+                  <div className="bg-slate-900/90 p-2.5 rounded-lg border border-cyan-500/30">
+                    <span className="text-[10px] text-slate-400 uppercase font-semibold block">
+                      Neutral Weight
+                    </span>
+                    <div className="text-sm font-mono font-bold text-cyan-300 mt-0.5">
+                      {isMetric
+                        ? `${Math.round(lbfToKn(markerForces.neutralLbf))} kN`
+                        : `${Math.round(markerForces.neutralLbf).toLocaleString()} lbf`}
+                    </div>
+                    <span className="text-[9px] text-slate-500">Static string buoyancy weight</span>
+                  </div>
+
+                  {/* Dawson-Paslay Buckling Card */}
+                  <div className={`bg-slate-900/90 p-2.5 rounded-lg border ${
+                    markerForces.statusColor === 'rose'
+                      ? 'border-rose-500/40'
+                      : markerForces.statusColor === 'amber'
+                      ? 'border-amber-500/40'
+                      : 'border-emerald-500/30'
+                  }`}>
+                    <span className="text-[10px] text-slate-400 uppercase font-semibold block">
+                      Buckling &amp; Dawson Limit
+                    </span>
+                    <div className={`text-xs font-mono font-bold mt-0.5 truncate ${
+                      markerForces.statusColor === 'rose'
+                        ? 'text-rose-400'
+                        : markerForces.statusColor === 'amber'
+                        ? 'text-amber-400'
+                        : 'text-emerald-400'
+                    }`}>
+                      {markerForces.bucklingStatus}
+                    </div>
+                    <span className="text-[9px] text-slate-500 block truncate">
+                      F_hel: {isMetric ? `${Math.round(lbfToKn(markerForces.criticalBucklingLbf))} kN` : `${Math.round(markerForces.criticalBucklingLbf).toLocaleString()} lbf`}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-3 bg-slate-900 rounded-lg text-center text-xs text-slate-400 font-mono">
+                  No marker placed. Click anywhere on the wellbore trajectory to place a depth marker.
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

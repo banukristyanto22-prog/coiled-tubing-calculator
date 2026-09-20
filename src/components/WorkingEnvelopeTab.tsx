@@ -14,8 +14,14 @@ import {
 } from '../utils/engineeringCalculations';
 import { UsedConditionPanel } from './UsedConditionPanel';
 import { 
+  evaluateRealTimeSafetyAlert, 
+  DetailedOperatingPointEvaluation 
+} from '../utils/vonMisesSafetyEngine';
+import { VonMisesSafetyAlertHud } from './VonMisesSafetyAlertHud';
+import { 
   Shield, 
   AlertTriangle, 
+  AlertOctagon,
   CheckCircle2, 
   Gauge, 
   Sliders, 
@@ -25,7 +31,10 @@ import {
   Layers,
   ChevronDown,
   ChevronUp,
-  ShieldAlert
+  ShieldAlert,
+  Sparkles,
+  Zap,
+  RotateCcw
 } from 'lucide-react';
 
 interface WorkingEnvelopeTabProps {
@@ -82,6 +91,14 @@ export const WorkingEnvelopeTab: React.FC<WorkingEnvelopeTabProps> = ({
   );
 
   const comparison = calculateUsedConditionComparison(ct, operatingPoint.axialTensionLbf, safetyFactor);
+
+  // Real-Time von Mises Safety Alert Evaluation
+  const detailedEval: DetailedOperatingPointEvaluation = evaluateRealTimeSafetyAlert(
+    ct,
+    isUsedActive ? effectiveUsedString : null,
+    operatingPoint,
+    safetyFactor
+  );
 
   // Chart coordinate mapping
   // X: Diff Pressure from -Collapse to +Burst
@@ -416,6 +433,15 @@ export const WorkingEnvelopeTab: React.FC<WorkingEnvelopeTabProps> = ({
         </div>
       </div>
 
+      {/* Real-Time von Mises Safety Alert System HUD */}
+      <VonMisesSafetyAlertHud
+        evaluation={detailedEval}
+        unitSystem={unitSystem}
+        safetyFactor={safetyFactor}
+        isUsedActive={isUsedActive}
+        onApplyOperatingPoint={(point) => setOperatingPoint(point)}
+      />
+
       {/* Main Interactive Working Envelope Chart & Simulator */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left 2 Cols: The von Mises Chart */}
@@ -583,41 +609,186 @@ export const WorkingEnvelopeTab: React.FC<WorkingEnvelopeTabProps> = ({
                 &darr; Compression (Snubbing)
               </text>
 
-              {/* Current Operating Point Marker */}
+              {/* Dynamic Crosshairs when in Yield Violation or Envelope Breach */}
+              {(detailedEval.isYieldViolated || detailedEval.isEnvelopeExceeded) && (
+                <g opacity="0.6">
+                  <line
+                    x1={padding}
+                    y1={currentY}
+                    x2={width - padding}
+                    y2={currentY}
+                    stroke={detailedEval.isYieldViolated ? '#f43f5e' : '#f59e0b'}
+                    strokeWidth="1"
+                    strokeDasharray="2 3"
+                  />
+                  <line
+                    x1={currentX}
+                    y1={padding}
+                    x2={currentX}
+                    y2={height - padding}
+                    stroke={detailedEval.isYieldViolated ? '#f43f5e' : '#f59e0b'}
+                    strokeWidth="1"
+                    strokeDasharray="2 3"
+                  />
+                </g>
+              )}
+
+              {/* Dynamic Projection Vector to Safe Boundary */}
+              {(detailedEval.isYieldViolated || detailedEval.isEnvelopeExceeded) && (
+                <g>
+                  <line
+                    x1={currentX}
+                    y1={currentY}
+                    x2={scaleX(detailedEval.mitigation.radialSafePoint.differentialPressurePsi)}
+                    y2={scaleY(detailedEval.mitigation.radialSafePoint.axialTensionLbf)}
+                    stroke={detailedEval.isYieldViolated ? '#f43f5e' : '#f59e0b'}
+                    strokeWidth="1.5"
+                    strokeDasharray="3 3"
+                  />
+                  {/* Safe Boundary Target Dot */}
+                  <circle
+                    cx={scaleX(detailedEval.mitigation.radialSafePoint.differentialPressurePsi)}
+                    cy={scaleY(detailedEval.mitigation.radialSafePoint.axialTensionLbf)}
+                    r="4"
+                    fill="none"
+                    stroke="#10b981"
+                    strokeWidth="1.5"
+                    strokeDasharray="2 2"
+                  />
+                </g>
+              )}
+
+              {/* Current Operating Point Marker with Real-Time Yield Warning Visuals */}
               <g>
-                <circle
-                  cx={currentX}
-                  cy={currentY}
-                  r="8"
-                  fill={
-                    isUsedActive && usedEvalResult.status !== 'safe'
-                      ? usedEvalResult.status === 'caution' ? '#f59e0b' : '#ef4444'
-                      : evalResult.status === 'safe' ? '#10b981' : evalResult.status === 'caution' ? '#f59e0b' : '#ef4444'
-                  }
-                  className="animate-ping opacity-40"
-                />
+                {/* Pulsing warning beacon */}
+                {detailedEval.isYieldViolated ? (
+                  <>
+                    <circle
+                      cx={currentX}
+                      cy={currentY}
+                      r="16"
+                      fill="#f43f5e"
+                      opacity="0.3"
+                      className="animate-ping"
+                    />
+                    <circle
+                      cx={currentX}
+                      cy={currentY}
+                      r="10"
+                      fill="none"
+                      stroke="#f43f5e"
+                      strokeWidth="2"
+                      className="animate-pulse"
+                    />
+                  </>
+                ) : detailedEval.isEnvelopeExceeded ? (
+                  <>
+                    <circle
+                      cx={currentX}
+                      cy={currentY}
+                      r="13"
+                      fill="#f59e0b"
+                      opacity="0.3"
+                      className="animate-ping"
+                    />
+                    <circle
+                      cx={currentX}
+                      cy={currentY}
+                      r="8"
+                      fill="none"
+                      stroke="#f59e0b"
+                      strokeWidth="1.5"
+                    />
+                  </>
+                ) : (
+                  <circle
+                    cx={currentX}
+                    cy={currentY}
+                    r="8"
+                    fill="#10b981"
+                    className="animate-ping opacity-35"
+                  />
+                )}
+
+                {/* Core Operating Point Dot */}
                 <circle
                   cx={currentX}
                   cy={currentY}
                   r="5"
                   fill={
-                    isUsedActive && usedEvalResult.status !== 'safe'
-                      ? usedEvalResult.status === 'caution' ? '#f59e0b' : '#ef4444'
-                      : evalResult.status === 'safe' ? '#10b981' : evalResult.status === 'caution' ? '#f59e0b' : '#ef4444'
+                    detailedEval.isYieldViolated
+                      ? '#f43f5e'
+                      : detailedEval.isEnvelopeExceeded
+                      ? '#f59e0b'
+                      : detailedEval.isApproachingLimit
+                      ? '#fbbf24'
+                      : '#10b981'
                   }
                   stroke="#ffffff"
                   strokeWidth="2"
                 />
-                <text
-                  x={Math.min(width - 90, currentX + 10)}
-                  y={Math.max(padding + 20, currentY - 10)}
-                  fill="#ffffff"
-                  fontSize="10"
-                  fontWeight="bold"
-                  fontFamily="JetBrains Mono"
-                >
-                  OP ({isMetric ? Math.round(psiToMpa(operatingPoint.differentialPressurePsi)) + ' MPa' : Math.round(operatingPoint.differentialPressurePsi) + ' psi'}, {isMetric ? Math.round(lbfToKn(operatingPoint.axialTensionLbf)) + ' kN' : Math.round(operatingPoint.axialTensionLbf) + ' lb'})
-                </text>
+
+                {/* High-visibility Callout Badge on Canvas */}
+                {detailedEval.isYieldViolated ? (
+                  <g transform={`translate(${Math.min(width - 155, Math.max(padding + 5, currentX - 65))}, ${Math.max(padding + 22, currentY - 26)})`}>
+                    <rect
+                      x="0"
+                      y="0"
+                      width="145"
+                      height="20"
+                      rx="4"
+                      fill="#881337"
+                      stroke="#f43f5e"
+                      strokeWidth="1.5"
+                    />
+                    <text
+                      x="72.5"
+                      y="14"
+                      textAnchor="middle"
+                      fill="#ffe4e6"
+                      fontSize="9.5"
+                      fontWeight="bold"
+                      fontFamily="JetBrains Mono"
+                    >
+                      ⚠ YIELD CROSSED (+{detailedEval.activeStress.yieldRatioPercent.toFixed(1)}%)
+                    </text>
+                  </g>
+                ) : detailedEval.isEnvelopeExceeded ? (
+                  <g transform={`translate(${Math.min(width - 155, Math.max(padding + 5, currentX - 65))}, ${Math.max(padding + 22, currentY - 26)})`}>
+                    <rect
+                      x="0"
+                      y="0"
+                      width="140"
+                      height="20"
+                      rx="4"
+                      fill="#78350f"
+                      stroke="#f59e0b"
+                      strokeWidth="1.5"
+                    />
+                    <text
+                      x="70"
+                      y="14"
+                      textAnchor="middle"
+                      fill="#fef3c7"
+                      fontSize="9.5"
+                      fontWeight="bold"
+                      fontFamily="JetBrains Mono"
+                    >
+                      ⚠ SAFE LIMIT EXCEEDED
+                    </text>
+                  </g>
+                ) : (
+                  <text
+                    x={Math.min(width - 95, currentX + 10)}
+                    y={Math.max(padding + 20, currentY - 10)}
+                    fill="#ffffff"
+                    fontSize="10"
+                    fontWeight="bold"
+                    fontFamily="JetBrains Mono"
+                  >
+                    OP ({isMetric ? Math.round(psiToMpa(operatingPoint.differentialPressurePsi)) + ' MPa' : Math.round(operatingPoint.differentialPressurePsi) + ' psi'}, {isMetric ? Math.round(lbfToKn(operatingPoint.axialTensionLbf)) + ' kN' : Math.round(operatingPoint.axialTensionLbf) + ' lb'})
+                  </text>
+                )}
               </g>
             </svg>
           </div>

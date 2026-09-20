@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { CoiledTubingString, UnitSystem, WellboreForcesInput } from '../types/coiledTubing';
+import { BhaConfiguration, CoiledTubingString, UnitSystem, WellboreForcesInput } from '../types/coiledTubing';
 import { DEFAULT_FORCES } from '../data/presets';
 import { 
   calculateWellboreForces, 
@@ -17,10 +17,33 @@ import { StressDistributionChart } from './StressDistributionChart';
 import { WellboreGeometryTable } from './WellboreGeometryTable';
 import { WellboreSurveyStation } from '../types/coiledTubing';
 import { DEFAULT_SURVEY_STATIONS, SURVEY_PRESET_COLLECTION } from '../data/presets';
-import { BHA_PRESETS } from '../data/bhaPresets';
+import { 
+  BHA_PRESETS, 
+  BHA_LIBRARY_ITEMS, 
+  BhaLibraryItemMetadata, 
+  computeBhaSummaryMetrics 
+} from '../data/bhaPresets';
 import { TfaPredictedVsActualChart } from './TfaPredictedVsActualChart';
 import { CriticalBucklingChart } from './CriticalBucklingChart';
+import { BucklingMiniProfilePlot } from './BucklingMiniProfilePlot';
+import { WellboreForcesHookloadChart } from './WellboreForcesHookloadChart';
+import { FrictionTrendBadge } from './FrictionTrendBadge';
 import { BhaConfigurationBuilder } from './BhaConfigurationBuilder';
+import { BhaDragForceCalculator } from './BhaDragForceCalculator';
+import { BhaLibrarySelector } from './BhaLibrarySelector';
+import { WellboreDiagramSchematic } from './WellboreDiagramSchematic';
+import { WellboreEditorModal } from './WellboreEditorModal';
+import { UsedCtStringUpdaterModal } from './UsedCtStringUpdaterModal';
+import { InjectorHeadForcesSummaryCard } from './InjectorHeadForcesSummaryCard';
+import { WELLBORE_PRESETS } from '../data/wellborePresets';
+import { WellboreProfile } from '../types/wellbore';
+import { WellboreLoadScenarioSelector } from './WellboreLoadScenarioSelector';
+import { 
+  LoadScenarioId, 
+  WellboreLoadScenario, 
+  WELLBORE_LOAD_SCENARIOS 
+} from '../data/wellboreLoadScenarios';
+import { useToast } from '../context/ToastContext';
 import { 
   Anchor, 
   AlertOctagon, 
@@ -33,6 +56,7 @@ import {
   Activity,
   Layers,
   TrendingUp,
+  TrendingDown,
   Table,
   FileSpreadsheet,
   Maximize2,
@@ -42,22 +66,100 @@ import {
 interface WellboreForcesTabProps {
   ct: CoiledTubingString;
   unitSystem: UnitSystem;
+  onUpdateString?: (updated: CoiledTubingString) => void;
 }
 
 export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
   ct,
   unitSystem,
+  onUpdateString,
 }) => {
   const isMetric = unitSystem === 'metric';
-  const [forcesInput, setForcesInput] = useState<WellboreForcesInput>(DEFAULT_FORCES);
-  const [displayMode, setDisplayMode] = useState<'bha' | 'buckling' | 'tfa' | 'geometry' | '3d' | 'chart' | 'stress' | 'dual'>('buckling');
-  const [dualSecondaryView, setDualSecondaryView] = useState<'3d' | 'hookload' | 'geometry' | 'buckling' | 'bha'>('3d');
+  const { addToast } = useToast();
+  const [activeScenarioId, setActiveScenarioId] = useState<LoadScenarioId | 'custom'>('normal_run');
+  const [forcesInput, setForcesInput] = useState<WellboreForcesInput>(
+    WELLBORE_LOAD_SCENARIOS.normal_run.forcesInput
+  );
+  const [displayMode, setDisplayMode] = useState<'schematic' | 'bha' | 'buckling' | 'tfa' | 'geometry' | '3d' | 'chart' | 'stress' | 'dual' | 'drag'>('schematic');
+  const [dualSecondaryView, setDualSecondaryView] = useState<'3d' | 'hookload' | 'geometry' | 'buckling' | 'bha' | 'drag'>('3d');
+
+  // Wellbore & Used CT Modal States
+  const [wellboreProfile, setWellboreProfile] = useState<WellboreProfile>(() => {
+    const base = WELLBORE_PRESETS[0];
+    const initialScenario = WELLBORE_LOAD_SCENARIOS.normal_run;
+    return {
+      ...base,
+      totalDepthMdFt: initialScenario.forcesInput.measuredDepthFt,
+      totalDepthTvdFt: initialScenario.forcesInput.trueVerticalDepthFt,
+      wellboreFluidDensityPpg: initialScenario.forcesInput.wellboreFluidDensityPpg,
+      wellheadPressurePsi: initialScenario.surfaceEquipment?.wellheadPressurePsi ?? base.wellheadPressurePsi,
+    };
+  });
+  const [isWellboreEditorOpen, setIsWellboreEditorOpen] = useState<boolean>(false);
+  const [isUsedStringUpdaterOpen, setIsUsedStringUpdaterOpen] = useState<boolean>(false);
 
   const results = calculateWellboreForces(ct, forcesInput);
+
+  // Handle Load Scenario preset selection
+  const handleSelectScenario = (scenario: WellboreLoadScenario) => {
+    setActiveScenarioId(scenario.id);
+    setForcesInput(scenario.forcesInput);
+
+    // Synchronize wellbore profile geometry and surface equipment
+    setWellboreProfile((prev) => ({
+      ...prev,
+      totalDepthMdFt: scenario.forcesInput.measuredDepthFt,
+      totalDepthTvdFt: scenario.forcesInput.trueVerticalDepthFt,
+      wellboreFluidDensityPpg: scenario.forcesInput.wellboreFluidDensityPpg,
+      wellheadPressurePsi: scenario.surfaceEquipment?.wellheadPressurePsi ?? prev.wellheadPressurePsi,
+      ...(scenario.wellboreProfileOverrides || {}),
+    }));
+
+    // Trigger engineering notification toast
+    const depthStr = isMetric
+      ? `${Math.round(ftToM(scenario.forcesInput.measuredDepthFt)).toLocaleString()} m MD`
+      : `${scenario.forcesInput.measuredDepthFt.toLocaleString()} ft MD`;
+    const overpullStr = isMetric
+      ? `${Math.round(lbfToKn(scenario.forcesInput.surfaceOverpullLimitLbf)).toLocaleString()} kN`
+      : `${scenario.forcesInput.surfaceOverpullLimitLbf.toLocaleString()} lbf`;
+    const snubbingStr = isMetric
+      ? `${Math.round(lbfToKn(scenario.forcesInput.appliedInjectorSnubbingLbf)).toLocaleString()} kN`
+      : `${scenario.forcesInput.appliedInjectorSnubbingLbf.toLocaleString()} lbf`;
+
+    addToast({
+      title: `Scenario Loaded: ${scenario.name}`,
+      message: `Populated variables: Target ${depthStr}, Friction μ = ${scenario.forcesInput.frictionCoefficientCasing.toFixed(2)}, Overpull Limit = ${overpullStr}, Snubbing = ${snubbingStr}. Expected: ${scenario.expectedOutcomes.hookloadSummary}`,
+      severity: scenario.category === 'critical_limit' ? 'warning' : 'info',
+      parameterName: 'Load Scenario Preset',
+      enteredValue: scenario.name,
+      engineeringStandard: 'API RP 5C7 / ASME Section VIII',
+      autoDismissMs: 5500,
+    });
+  };
+
+  // Reset to Baseline Normal Run
+  const handleResetToBaseline = () => {
+    handleSelectScenario(WELLBORE_LOAD_SCENARIOS.normal_run);
+  };
+
+  // Synchronize when wellbore profile is saved
+  const handleSaveWellboreProfile = (profile: WellboreProfile) => {
+    setActiveScenarioId('custom');
+    setWellboreProfile(profile);
+    const prodCasing = profile.casingSections.find((c) => c.type === 'production_casing') || profile.casingSections[profile.casingSections.length - 1];
+    setForcesInput((prev) => ({
+      ...prev,
+      measuredDepthFt: profile.totalDepthMdFt,
+      trueVerticalDepthFt: profile.totalDepthTvdFt,
+      wellboreFluidDensityPpg: profile.wellboreFluidDensityPpg,
+      casingInnerDiameterIn: prodCasing ? prodCasing.innerDiameterIn : prev.casingInnerDiameterIn,
+    }));
+  };
 
   // Handle survey stations updates in real-time
   const handleSurveyStationsChange = (updatedStations: WellboreSurveyStation[]) => {
     if (!updatedStations || updatedStations.length === 0) return;
+    setActiveScenarioId('custom');
     const last = updatedStations[updatedStations.length - 1];
     const maxInc = Math.max(...updatedStations.map((s) => s.inclinationDeg));
     setForcesInput((prev) => ({
@@ -70,31 +172,80 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
     }));
   };
 
-  // SVG Chart Dimensions
-  const width = 640;
-  const height = 400;
-  const padding = 50;
+  // Handle BHA Library preset selection
+  const handleSelectBha = (config: BhaConfiguration, metadata?: BhaLibraryItemMetadata) => {
+    setActiveScenarioId('custom');
+    const updatedConfig: BhaConfiguration = {
+      ...config,
+      enabled: true,
+    };
 
-  const maxDepth = Math.max(1, forcesInput.measuredDepthFt);
-  const loads = results.weightProfile.map((p) => [p.slackoffLbf, p.neutralLbf, p.pickupLbf, p.helicalLimitLbf]).flat();
-  const minLoad = Math.min(...loads, -results.helicalBucklingThresholdLbf * 1.1);
-  const maxLoad = Math.max(...loads, results.surfacePickupWeightLbf * 1.15);
+    setForcesInput((prev) => ({
+      ...prev,
+      bhaConfig: updatedConfig,
+    }));
 
-  // Map coordinates: X = Hookload (lbf), Y = Depth (ft, surface at top, TD at bottom)
-  const scaleX = (load: number) => padding + ((load - minLoad) / (maxLoad - minLoad)) * (width - 2 * padding);
-  const scaleY = (depth: number) => padding + (depth / maxDepth) * (height - 2 * padding);
+    if (onUpdateString) {
+      onUpdateString({
+        ...ct,
+        bhaConfig: updatedConfig,
+      });
+    }
 
-  const pathSlackoff = results.weightProfile
-    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${scaleX(p.slackoffLbf)} ${scaleY(p.depthFt)}`)
-    .join(' ');
+    const metrics = computeBhaSummaryMetrics(
+      updatedConfig.segments,
+      ct,
+      forcesInput.wellboreFluidDensityPpg,
+      forcesInput.casingInnerDiameterIn,
+      forcesInput.wellboreInclinationDeg
+    );
 
-  const pathNeutral = results.weightProfile
-    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${scaleX(p.neutralLbf)} ${scaleY(p.depthFt)}`)
-    .join(' ');
+    const lenStr = isMetric ? `${metrics.totalLengthM} m` : `${metrics.totalLengthFt} ft`;
+    const wtStr = isMetric
+      ? `${(metrics.totalBuoyedWeightKg ?? 0).toLocaleString()} kg`
+      : `${(metrics.totalBuoyedWeightLbs ?? 0).toLocaleString()} lbs`;
 
-  const pathPickup = results.weightProfile
-    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${scaleX(p.pickupLbf)} ${scaleY(p.depthFt)}`)
-    .join(' ');
+    addToast({
+      title: `BHA Applied: ${config.name}`,
+      message: `Toolstring loaded with ${config.segments.length} components (${lenStr}, ${wtStr} buoyed weight, ${metrics.stiffnessRatioVsCt.toFixed(1)}× CT stiffness). Wellbore forces, contact drag, and buckling limits updated.`,
+      severity: 'info',
+      parameterName: 'BHA Configuration',
+      enteredValue: config.name,
+      engineeringStandard: 'API RP 5C7 / API SPEC 16ST',
+      autoDismissMs: 5000,
+    });
+  };
+
+  // Handle toggling BHA enabled / bare CT bypass
+  const handleToggleBhaEnabled = (enabled: boolean) => {
+    setActiveScenarioId('custom');
+    const currentConfig = forcesInput.bhaConfig || BHA_PRESETS.cleanout?.config || DEFAULT_FORCES.bhaConfig;
+    const updated: BhaConfiguration = {
+      ...(currentConfig || { name: 'Standard BHA', segments: [] }),
+      enabled,
+    };
+
+    setForcesInput((prev) => ({
+      ...prev,
+      bhaConfig: updated,
+    }));
+
+    if (onUpdateString) {
+      onUpdateString({
+        ...ct,
+        bhaConfig: updated,
+      });
+    }
+
+    addToast({
+      title: enabled ? 'BHA Toolstring Simulation Active' : 'BHA Bypassed (Bare CT)',
+      message: enabled
+        ? `BHA toolstring weight, stiffness, and contact drag forces now active in wellbore calculations.`
+        : `Simulating bare coiled tubing to TD. Toolstring weight and stiffness removed.`,
+      severity: enabled ? 'info' : 'warning',
+      autoDismissMs: 4000,
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -171,6 +322,44 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
         </div>
       </div>
 
+      {/* Wellbore Load Scenario Presets Selector */}
+      <WellboreLoadScenarioSelector
+        activeScenarioId={activeScenarioId}
+        onSelectScenario={handleSelectScenario}
+        onResetToBaseline={handleResetToBaseline}
+        unitSystem={unitSystem}
+      />
+
+      {/* BHA Library Selector & Toolstring Presets */}
+      <BhaLibrarySelector
+        bhaConfig={forcesInput.bhaConfig}
+        onSelectBha={handleSelectBha}
+        onToggleBhaEnabled={handleToggleBhaEnabled}
+        onOpenBhaBuilder={() => setDisplayMode('bha')}
+        onOpenDragCalculator={() => setDisplayMode('drag')}
+        ct={ct}
+        unitSystem={unitSystem}
+        casingInnerDiameterIn={forcesInput.casingInnerDiameterIn}
+        fluidDensityPpg={forcesInput.wellboreFluidDensityPpg}
+        wellboreInclinationDeg={forcesInput.wellboreInclinationDeg}
+      />
+
+      {/* Injector Head Pick-up and Slack-off Weights Summary Card */}
+      <InjectorHeadForcesSummaryCard
+        ct={ct}
+        forcesInput={forcesInput}
+        results={results}
+        unitSystem={unitSystem}
+        wellboreProfile={wellboreProfile}
+        onUpdateForcesInput={(updated) => {
+          setActiveScenarioId('custom');
+          setForcesInput((prev) => ({
+            ...prev,
+            ...updated,
+          }));
+        }}
+      />
+
       {/* Main Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left Col: Trajectory & Friction Controls */}
@@ -183,6 +372,48 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
           </div>
 
           <div className="space-y-3.5 text-xs">
+            {/* Quick Load Scenario Switcher in Sidebar */}
+            <div className="p-3 bg-slate-950/80 rounded-xl border border-slate-800 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <Sliders className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Load Scenario:</span>
+                </span>
+                {activeScenarioId !== 'custom' ? (
+                  <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold border ${WELLBORE_LOAD_SCENARIOS[activeScenarioId].badgeColor.bg} ${WELLBORE_LOAD_SCENARIOS[activeScenarioId].badgeColor.text} ${WELLBORE_LOAD_SCENARIOS[activeScenarioId].badgeColor.border}`}>
+                    {WELLBORE_LOAD_SCENARIOS[activeScenarioId].name}
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                    Custom Tweaks
+                  </span>
+                )}
+              </div>
+
+              <select
+                aria-label="Select wellbore load scenario preset"
+                value={activeScenarioId}
+                onChange={(e) => {
+                  const val = e.target.value as LoadScenarioId;
+                  if (WELLBORE_LOAD_SCENARIOS[val]) {
+                    handleSelectScenario(WELLBORE_LOAD_SCENARIOS[val]);
+                  }
+                }}
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-medium focus:border-cyan-500 focus:outline-none"
+              >
+                {Object.values(WELLBORE_LOAD_SCENARIOS).map((sc) => (
+                  <option key={sc.id} value={sc.id}>
+                    {sc.name} — {sc.category === 'critical_limit' ? '🚨 Critical Limit' : sc.category === 'contingency' ? '⚠️ Warning' : '✅ Standard'}
+                  </option>
+                ))}
+                {activeScenarioId === 'custom' && (
+                  <option value="custom" disabled>
+                    -- Custom User Variables --
+                  </option>
+                )}
+              </select>
+            </div>
+
             {/* Trajectory Profile Mode Toggle */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
@@ -197,6 +428,7 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
                 <button
                   type="button"
                   onClick={() => {
+                    setActiveScenarioId('custom');
                     setForcesInput({
                       ...forcesInput,
                       geometryMode: 'custom_survey',
@@ -214,6 +446,7 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
                 <button
                   type="button"
                   onClick={() => {
+                    setActiveScenarioId('custom');
                     setForcesInput({
                       ...forcesInput,
                       geometryMode: 'constant',
@@ -302,7 +535,10 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
                     {forcesInput.measuredDepthFt > 0 && (
                       <button
                         type="button"
-                        onClick={() => setForcesInput({ ...forcesInput, measuredDepthFt: 0, trueVerticalDepthFt: 0 })}
+                        onClick={() => {
+                          setActiveScenarioId('custom');
+                          setForcesInput({ ...forcesInput, measuredDepthFt: 0, trueVerticalDepthFt: 0 });
+                        }}
                         className="text-[10px] text-cyan-400 hover:text-cyan-300 font-mono underline"
                         title="Set to surface depth 0"
                       >
@@ -316,6 +552,7 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
                     step="500"
                     value={isMetric ? Math.round(ftToM(forcesInput.measuredDepthFt)) : forcesInput.measuredDepthFt}
                     onChange={(e) => {
+                      setActiveScenarioId('custom');
                       const raw = e.target.value;
                       const val = raw === '' ? 0 : parseFloat(raw);
                       const parsed = isNaN(val) ? 0 : Math.max(0, val);
@@ -342,12 +579,13 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
                     max="92"
                     step="1"
                     value={forcesInput.wellboreInclinationDeg}
-                    onChange={(e) =>
+                    onChange={(e) => {
+                      setActiveScenarioId('custom');
                       setForcesInput({
                         ...forcesInput,
                         wellboreInclinationDeg: parseInt(e.target.value) || 0,
-                      })
-                    }
+                      });
+                    }}
                     className="w-full accent-amber-400 cursor-pointer h-1.5 bg-slate-800 rounded-lg"
                   />
                   <div className="flex justify-between text-[10px] font-mono text-slate-500 mt-1">
@@ -359,28 +597,83 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
               </>
             )}
 
-            {/* Friction Coefficient */}
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-slate-400">Casing Friction Coefficient (&mu;)</label>
-                <span className="font-mono font-bold text-cyan-400">
-                  {forcesInput.frictionCoefficientCasing.toFixed(2)}
-                </span>
+            {/* Dynamic Pipe-to-Wellbore Friction Factor Slider */}
+            <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800 space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-slate-300 font-semibold text-xs flex items-center gap-1.5">
+                  <Sliders className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Pipe-to-Wellbore Friction (&mu;)</span>
+                </label>
+                <div className="flex items-center gap-1.5 font-mono">
+                  <span className="font-bold text-cyan-400 text-sm bg-cyan-950/80 px-2 py-0.5 rounded border border-cyan-800/60 shadow-inner">
+                    {forcesInput.frictionCoefficientCasing.toFixed(2)}
+                  </span>
+                  <FrictionTrendBadge frictionValue={forcesInput.frictionCoefficientCasing} size="xs" />
+                </div>
               </div>
-              <input
-                type="range"
-                min="0.10"
-                max="0.60"
-                step="0.02"
-                value={forcesInput.frictionCoefficientCasing}
-                onChange={(e) =>
-                  setForcesInput({
-                    ...forcesInput,
-                    frictionCoefficientCasing: parseFloat(e.target.value) || 0.25,
-                  })
-                }
-                className="w-full accent-cyan-400 cursor-pointer h-1.5 bg-slate-800 rounded-lg"
-              />
+
+              <div className="space-y-1">
+                <input
+                  type="range"
+                  min="0.10"
+                  max="0.40"
+                  step="0.01"
+                  value={forcesInput.frictionCoefficientCasing}
+                  onChange={(e) => {
+                    setActiveScenarioId('custom');
+                    const newMu = parseFloat(e.target.value) || 0.24;
+                    setForcesInput({
+                      ...forcesInput,
+                      frictionCoefficientCasing: Number(newMu.toFixed(2)),
+                    });
+                  }}
+                  className="w-full accent-cyan-400 cursor-pointer h-1.5 bg-slate-800 rounded-lg"
+                  aria-label="Pipe-to-wellbore friction factor"
+                />
+                <div className="flex justify-between text-[10px] font-mono items-center">
+                  <span className="flex items-center gap-0.5 text-emerald-400" title="Low friction: Below typical well profile baseline (~0.24)">
+                    <ArrowDown className="w-2.5 h-2.5 stroke-[2.5]" />
+                    <span>0.10 Low</span>
+                  </span>
+                  <span className="text-slate-400" title="Nominal typical cased wellbore baseline (0.22 - 0.26)">
+                    0.24 Typical
+                  </span>
+                  <span className="flex items-center gap-0.5 text-rose-400" title="High friction: Above typical well profile baseline (~0.24)">
+                    <span>High 0.40</span>
+                    <ArrowUp className="w-2.5 h-2.5 stroke-[2.5]" />
+                  </span>
+                </div>
+              </div>
+
+              {/* Quick Presets */}
+              <div className="pt-1 flex flex-wrap gap-1">
+                {[
+                  { val: 0.12, label: '0.12 OBM' },
+                  { val: 0.20, label: '0.20 Brine' },
+                  { val: 0.24, label: '0.24 WBM' },
+                  { val: 0.30, label: '0.30 Drag' },
+                  { val: 0.40, label: '0.40 OH' },
+                ].map((p) => (
+                  <button
+                    key={p.val}
+                    type="button"
+                    onClick={() => {
+                      setActiveScenarioId('custom');
+                      setForcesInput({
+                        ...forcesInput,
+                        frictionCoefficientCasing: p.val,
+                      });
+                    }}
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-all border ${
+                      Math.abs(forcesInput.frictionCoefficientCasing - p.val) < 0.008
+                        ? 'bg-cyan-600 text-white font-bold border-cyan-400'
+                        : 'bg-slate-900 hover:bg-slate-800 text-slate-400 border-slate-700'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Wellbore Fluid Density */}
@@ -393,6 +686,7 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
                 step="0.1"
                 value={isMetric ? Number(ppgToSg(forcesInput.wellboreFluidDensityPpg).toFixed(2)) : forcesInput.wellboreFluidDensityPpg}
                 onChange={(e) => {
+                  setActiveScenarioId('custom');
                   const val = parseFloat(e.target.value) || 8.34;
                   setForcesInput({
                     ...forcesInput,
@@ -433,13 +727,23 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
                 </span>
               </div>
 
+              {/* Recharts Mini Buckling Limits Plot Along Depth */}
+              <div className="pt-2">
+                <BucklingMiniProfilePlot
+                  weightProfile={results.weightProfile}
+                  unitSystem={unitSystem}
+                  height={115}
+                  onOpenFullChart={() => setDisplayMode('buckling')}
+                />
+              </div>
+
               <button
                 type="button"
                 onClick={() => setDisplayMode('buckling')}
                 className="w-full mt-2 py-1.5 px-2 bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/40 text-amber-300 rounded text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-all shadow-sm"
               >
                 <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
-                <span>Open Critical Buckling Graph &rarr;</span>
+                <span>Open Full Buckling Graph &rarr;</span>
               </button>
             </div>
 
@@ -450,13 +754,55 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
                   <Wrench className="w-3.5 h-3.5 text-cyan-400" />
                   <span>BHA Toolstring</span>
                 </span>
-                <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-semibold border ${
-                  forcesInput.bhaConfig?.enabled
-                    ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
-                    : 'bg-slate-800 text-slate-400 border-slate-700'
-                }`}>
+                <button
+                  type="button"
+                  onClick={() => handleToggleBhaEnabled(!forcesInput.bhaConfig?.enabled)}
+                  className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-semibold border transition-all ${
+                    forcesInput.bhaConfig?.enabled
+                      ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
+                      : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'
+                  }`}
+                  title="Click to toggle BHA active/bypass"
+                >
                   {forcesInput.bhaConfig?.enabled ? 'ACTIVE' : 'OFF'}
-                </span>
+                </button>
+              </div>
+
+              {/* Quick Select BHA Preset */}
+              <div className="pt-0.5">
+                <label className="text-[10px] uppercase font-semibold tracking-wider text-slate-400 block mb-1">
+                  Preset Selection:
+                </label>
+                <select
+                  aria-label="Select BHA toolstring preset"
+                  value={
+                    !forcesInput.bhaConfig?.enabled
+                      ? 'bypass'
+                      : BHA_LIBRARY_ITEMS.find((item) => item.config.name === forcesInput.bhaConfig?.name)?.id || 'custom'
+                  }
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val === 'bypass') {
+                      handleToggleBhaEnabled(false);
+                    } else {
+                      const item = BHA_LIBRARY_ITEMS.find((i) => i.id === val);
+                      if (item) {
+                        handleSelectBha(item.config, item);
+                      }
+                    }
+                  }}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white font-medium focus:border-cyan-500 focus:outline-none"
+                >
+                  <option value="bypass">-- Bypass BHA (Bare CT) --</option>
+                  {BHA_LIBRARY_ITEMS.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.shortName} ({item.typicalToolCount} tools, {item.config.segments.reduce((acc, s) => acc + s.lengthFt, 0).toFixed(0)}ft)
+                    </option>
+                  ))}
+                  {forcesInput.bhaConfig?.enabled && !BHA_LIBRARY_ITEMS.some((i) => i.config.name === forcesInput.bhaConfig?.name) && (
+                    <option value="custom">-- Custom Toolstring --</option>
+                  )}
+                </select>
               </div>
 
               {results.bhaMetrics ? (
@@ -471,8 +817,8 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
                     <span className="text-slate-400">Buoyed BHA Weight:</span>
                     <span className="font-mono font-bold text-amber-300">
                       {isMetric
-                        ? `${results.bhaMetrics.totalBuoyedWeightKg.toLocaleString()} kg`
-                        : `${results.bhaMetrics.totalBuoyedWeightLbs.toLocaleString()} lbs`}
+                        ? `${(results.bhaMetrics.totalBuoyedWeightKg ?? 0).toLocaleString()} kg`
+                        : `${(results.bhaMetrics.totalBuoyedWeightLbs ?? 0).toLocaleString()} lbs`}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
@@ -496,14 +842,24 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
                 </div>
               )}
 
-              <button
-                type="button"
-                onClick={() => setDisplayMode('bha')}
-                className="w-full mt-2 py-1.5 px-2 bg-cyan-600/20 hover:bg-cyan-600/30 border border-cyan-500/40 text-cyan-300 rounded text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-all shadow-sm"
-              >
-                <Sliders className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Configure BHA Toolstring &rarr;</span>
-              </button>
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={() => setDisplayMode('bha')}
+                  className="py-1.5 px-2 bg-cyan-600/20 hover:bg-cyan-600/30 border border-cyan-500/40 text-cyan-300 rounded text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-all shadow-sm"
+                >
+                  <Sliders className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>BHA Toolstring</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDisplayMode('drag')}
+                  className="py-1.5 px-2 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 rounded text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-all shadow-sm"
+                >
+                  <TrendingDown className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Axial Drag</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -517,11 +873,69 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
                 Visualizer Mode:
               </span>
               <span className="text-[11px] text-slate-400 hidden sm:inline">
-                Switch between 3D kinematic simulation, hookload, and buckling curves
+                Interactive wellbore schematic, drag forces, buckling curves &amp; BHA
               </span>
             </div>
 
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsWellboreEditorOpen(true)}
+                className="px-2.5 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/40 text-blue-300 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all"
+                title="Edit Wellbore & Casing Schedule"
+              >
+                <Layers className="w-3.5 h-3.5 text-blue-400" />
+                <span>Update Wellbore</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsUsedStringUpdaterOpen(true)}
+                className="px-2.5 py-1.5 bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/40 text-amber-300 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all"
+                title="Update Used String Condition (Fatigue, Wall Loss, Ballooning)"
+              >
+                <Wrench className="w-3.5 h-3.5 text-amber-400" />
+                <span>Update Used CT</span>
+              </button>
+            </div>
+
             <div className="flex bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs w-full sm:w-auto overflow-x-auto">
+              <button
+                type="button"
+                onClick={() => setDisplayMode('schematic')}
+                className={`flex-1 sm:flex-none px-3 py-1.5 rounded-md flex items-center justify-center gap-1.5 font-medium transition-all ${
+                  displayMode === 'schematic'
+                    ? 'bg-cyan-600 text-white font-semibold shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5 text-cyan-200" />
+                <span>Architecture &amp; Ingress Diagram</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setDisplayMode('drag')}
+                className={`flex-1 sm:flex-none px-3 py-1.5 rounded-md flex items-center justify-center gap-1.5 font-medium transition-all ${
+                  displayMode === 'drag'
+                    ? 'bg-emerald-600 text-white font-semibold shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <TrendingDown className="w-3.5 h-3.5 text-emerald-300" />
+                <span>Drag Calculator</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setDisplayMode('bha')}
+                className={`flex-1 sm:flex-none px-3 py-1.5 rounded-md flex items-center justify-center gap-1.5 font-medium transition-all ${
+                  displayMode === 'bha'
+                    ? 'bg-cyan-600 text-white font-semibold shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Wrench className="w-3.5 h-3.5 text-cyan-200" />
+                <span>BHA 3D</span>
+              </button>
               <button
                 type="button"
                 onClick={() => setDisplayMode('buckling')}
@@ -532,7 +946,8 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
                 }`}
               >
                 <ShieldAlert className="w-3.5 h-3.5 text-amber-300" />
-                <span>Critical Buckling Graph</span>
+                <span>Buckling Limits Plot</span>
+                <span className="text-[9px] font-mono px-1 rounded bg-amber-950/80 text-amber-300 border border-amber-600/50">Recharts</span>
               </button>
               <button
                 type="button"
@@ -580,7 +995,7 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
                 }`}
               >
                 <Anchor className="w-3.5 h-3.5 text-cyan-200" />
-                <span>Hookload Chart</span>
+                <span>Hookload &amp; Limits</span>
               </button>
               <button
                 type="button"
@@ -593,18 +1008,6 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
               >
                 <TrendingUp className="w-3.5 h-3.5 text-cyan-200" />
                 <span>Stress Distribution</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setDisplayMode('bha')}
-                className={`flex-1 sm:flex-none px-3 py-1.5 rounded-md flex items-center justify-center gap-1.5 font-medium transition-all ${
-                  displayMode === 'bha'
-                    ? 'bg-cyan-600 text-white font-semibold shadow-sm'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                <Wrench className="w-3.5 h-3.5 text-cyan-200" />
-                <span>BHA Builder</span>
               </button>
               <button
                 type="button"
@@ -628,6 +1031,17 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
               <div className="flex bg-slate-950 p-0.5 rounded-md border border-slate-800">
                 <button
                   type="button"
+                  onClick={() => setDualSecondaryView('drag')}
+                  className={`px-3 py-1 rounded text-xs font-medium transition-all ${
+                    dualSecondaryView === 'drag'
+                      ? 'bg-emerald-600 text-white font-semibold shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Axial Drag
+                </button>
+                <button
+                  type="button"
                   onClick={() => setDualSecondaryView('bha')}
                   className={`px-3 py-1 rounded text-xs font-medium transition-all ${
                     dualSecondaryView === 'bha'
@@ -635,7 +1049,7 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
                       : 'text-slate-400 hover:text-slate-200'
                   }`}
                 >
-                  BHA Builder
+                  BHA Assembly 3D
                 </button>
                 <button
                   type="button"
@@ -685,10 +1099,35 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
             </div>
           )}
 
+          {/* Wellbore Schematic Diagram (Full Wellbore, Casing & CT Simulation) */}
+          {displayMode === 'schematic' && (
+            <WellboreDiagramSchematic
+              ct={ct}
+              wellboreProfile={wellboreProfile}
+              unitSystem={unitSystem}
+              forcesInput={forcesInput}
+              forcesResult={results}
+              onOpenWellboreEditor={() => setIsWellboreEditorOpen(true)}
+              onOpenUsedStringUpdater={() => setIsUsedStringUpdaterOpen(true)}
+              onUpdateWellboreProfile={handleSaveWellboreProfile}
+              onOpenBucklingPlot={() => setDisplayMode('buckling')}
+            />
+          )}
+
+          {/* Axial Drag Force Calculator */}
+          {(displayMode === 'drag' || (displayMode === 'dual' && dualSecondaryView === 'drag')) && (
+            <BhaDragForceCalculator
+              ct={ct}
+              forcesInput={forcesInput}
+              unitSystem={unitSystem}
+              onOpenBhaBuilder={() => setDisplayMode('bha')}
+            />
+          )}
+
           {/* BHA (Bottom Hole Assembly) Builder */}
           {(displayMode === 'bha' || (displayMode === 'dual' && dualSecondaryView === 'bha')) && (
             <BhaConfigurationBuilder
-              bhaConfig={forcesInput.bhaConfig || BHA_PRESETS.cleanout.config}
+              bhaConfig={forcesInput.bhaConfig || BHA_PRESETS.cleanout?.config || DEFAULT_FORCES.bhaConfig}
               onChange={(newBhaConfig) => {
                 setForcesInput((prev) => ({
                   ...prev,
@@ -709,6 +1148,13 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
               ct={ct}
               forcesInput={forcesInput}
               unitSystem={unitSystem}
+              onChangeFrictionCoefficient={(newMu) => {
+                setActiveScenarioId('custom');
+                setForcesInput((prev) => ({
+                  ...prev,
+                  frictionCoefficientCasing: newMu,
+                }));
+              }}
             />
           )}
 
@@ -742,124 +1188,21 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
             />
           )}
 
-          {/* Hookload vs Depth Weight Indicator Chart */}
+          {/* Hookload vs Depth & Buckling Limits Recharts Plot */}
           {(displayMode === 'chart' || (displayMode === 'dual' && dualSecondaryView === 'hookload')) && (
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm flex flex-col justify-between space-y-4">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-                <div className="flex items-center gap-2">
-                  <Anchor className="w-5 h-5 text-cyan-400" />
-                  <div>
-                    <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-                      Weight Indicator Profile (Hookload vs Depth)
-                    </h3>
-                    <span className="text-[11px] text-slate-400">
-                      Coiled Matrix Surface Load Curves
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-3 text-xs">
-                  <span className="flex items-center gap-1 text-emerald-400 font-mono">
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 inline-block" /> RIH
-                  </span>
-                  <span className="flex items-center gap-1 text-cyan-400 font-mono">
-                    <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 inline-block" /> Neutral
-                  </span>
-                  <span className="flex items-center gap-1 text-amber-400 font-mono">
-                    <span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" /> POOH
-                  </span>
-                </div>
-              </div>
-
-              {/* SVG Weight Chart */}
-              <div className="relative w-full aspect-[16/10] bg-slate-950/80 rounded-lg border border-slate-800/80 p-2 select-none">
-                <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full">
-                  {/* Grid Lines */}
-                  {/* Zero Load line */}
-                  {minLoad < 0 && (
-                    <line
-                      x1={scaleX(0)}
-                      y1={padding}
-                      x2={scaleX(0)}
-                      y2={height - padding}
-                      stroke="#475569"
-                      strokeWidth="1.5"
-                      strokeDasharray="4 4"
-                    />
-                  )}
-
-                  {/* Horizontal depth markers */}
-                  {[0.25, 0.5, 0.75, 1.0].map((frac) => (
-                    <g key={frac}>
-                      <line
-                        x1={padding}
-                        y1={scaleY(maxDepth * frac)}
-                        x2={width - padding}
-                        y2={scaleY(maxDepth * frac)}
-                        stroke="#1e293b"
-                        strokeWidth="1"
-                        strokeDasharray="2 2"
-                      />
-                      <text
-                        x={padding - 8}
-                        y={scaleY(maxDepth * frac) + 3}
-                        textAnchor="end"
-                        fill="#64748b"
-                        fontSize="9"
-                        fontFamily="JetBrains Mono"
-                      >
-                        {isMetric ? Math.round(ftToM(maxDepth * frac)) + 'm' : Math.round(maxDepth * frac) + 'ft'}
-                      </text>
-                    </g>
-                  ))}
-
-                  {/* Curves */}
-                  {/* Slack-off (RIH) */}
-                  <path d={pathSlackoff} fill="none" stroke="#10b981" strokeWidth="2.5" />
-                  {/* Neutral */}
-                  <path d={pathNeutral} fill="none" stroke="#06b6d4" strokeWidth="2" strokeDasharray="4 3" />
-                  {/* Pick-up (POOH) */}
-                  <path d={pathPickup} fill="none" stroke="#f59e0b" strokeWidth="2.5" />
-
-                  {/* Labels */}
-                  <text
-                    x={width / 2}
-                    y={height - 12}
-                    textAnchor="middle"
-                    fill="#94a3b8"
-                    fontSize="10"
-                    fontFamily="JetBrains Mono"
-                  >
-                    &larr; Compression (Snubbing) | Hookload (Tension) &rarr;
-                  </text>
-                  <text
-                    x={20}
-                    y={height / 2}
-                    textAnchor="middle"
-                    transform={`rotate(-90, 20, ${height / 2})`}
-                    fill="#94a3b8"
-                    fontSize="10"
-                    fontFamily="JetBrains Mono"
-                  >
-                    Measured Depth (MD) &rarr;
-                  </text>
-                </svg>
-              </div>
-
-              <div className="p-3 bg-slate-950/60 rounded-lg border border-slate-800 text-xs text-slate-300 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <ShieldAlert className="w-4 h-4 text-cyan-400" />
-                  <span>
-                    Surface Friction Drag: <strong className="text-white font-mono">{isMetric ? Math.round(lbfToKn(results.totalWellboreDragLbf)) + ' kN' : Math.round(results.totalWellboreDragLbf).toLocaleString() + ' lbf'}</strong> at TD
-                  </span>
-                </div>
-                {results.isLockedUp && (
-                  <span className="text-rose-400 font-semibold font-mono text-[11px]">
-                    WARNING: High drag forces in horizontal section!
-                  </span>
-                )}
-              </div>
-            </div>
+            <WellboreForcesHookloadChart
+              ct={ct}
+              forcesInput={forcesInput}
+              results={results}
+              unitSystem={unitSystem}
+              onChangeFrictionCoefficient={(newMu) => {
+                setActiveScenarioId('custom');
+                setForcesInput((prev) => ({
+                  ...prev,
+                  frictionCoefficientCasing: newMu,
+                }));
+              }}
+            />
           )}
 
           {/* Stress Distribution Line Chart (Recharts) - Visible in 'stress' or 'dual' modes */}
@@ -872,6 +1215,24 @@ export const WellboreForcesTab: React.FC<WellboreForcesTabProps> = ({
           )}
         </div>
       </div>
+
+      {/* Wellbore & Casing Schedule Editor Modal */}
+      <WellboreEditorModal
+        isOpen={isWellboreEditorOpen}
+        onClose={() => setIsWellboreEditorOpen(false)}
+        currentProfile={wellboreProfile}
+        onSaveProfile={handleSaveWellboreProfile}
+        unitSystem={unitSystem}
+      />
+
+      {/* Used CT String Condition & Wear Updater Modal */}
+      <UsedCtStringUpdaterModal
+        isOpen={isUsedStringUpdaterOpen}
+        onClose={() => setIsUsedStringUpdaterOpen(false)}
+        ct={ct}
+        onUpdateString={onUpdateString}
+        unitSystem={unitSystem}
+      />
     </div>
   );
 };

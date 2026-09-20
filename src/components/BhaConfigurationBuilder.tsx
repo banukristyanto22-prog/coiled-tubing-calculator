@@ -8,6 +8,7 @@ import {
 } from '../types/coiledTubing';
 import { 
   BHA_PRESETS, 
+  TOOL_TYPE_DEFAULTS,
   calculateSegmentLinearWeight, 
   calculateSegmentMomentOfInertia, 
   computeBhaSummaryMetrics 
@@ -36,8 +37,12 @@ import {
   Scale, 
   Wrench, 
   Zap, 
-  Maximize2 
+  Maximize2,
+  Boxes,
+  Eye
 } from 'lucide-react';
+import { BhaAssembly3DViewer } from './BhaAssembly3DViewer';
+import { BhaRealistic2DSchematic } from './BhaRealistic2DSchematic';
 
 interface BhaConfigurationBuilderProps {
   bhaConfig: BhaConfiguration;
@@ -48,19 +53,6 @@ interface BhaConfigurationBuilderProps {
   wellboreInclinationDeg: number;
   unitSystem: UnitSystem;
 }
-
-const TOOL_TYPE_DEFAULTS: Record<BhaToolType, { name: string; defaultOd: number; defaultId: number; defaultLen: number; color: string }> = {
-  connector: { name: 'CT External Connector', defaultOd: 2.875, defaultId: 1.750, defaultLen: 1.5, color: '#06b6d4' },
-  valve: { name: 'Dual Flapper Check Valve', defaultOd: 2.875, defaultId: 1.250, defaultLen: 2.5, color: '#3b82f6' },
-  jar: { name: 'Bi-Directional Hydraulic Jar', defaultOd: 2.875, defaultId: 1.000, defaultLen: 7.0, color: '#f59e0b' },
-  motor: { name: 'PDM Mud Motor (5:6 Lobe)', defaultOd: 2.875, defaultId: 1.100, defaultLen: 18.0, color: '#ef4444' },
-  collar: { name: 'Heavy Weight Drill Collars', defaultOd: 3.125, defaultId: 1.000, defaultLen: 30.0, color: '#6366f1' },
-  agitator: { name: 'Axial Fluid Oscillator (Agitator)', defaultOd: 3.125, defaultId: 1.125, defaultLen: 8.0, color: '#d946ef' },
-  tractor: { name: 'Robotic Downhole Well Tractor', defaultOd: 3.125, defaultId: 1.000, defaultLen: 22.0, color: '#8b5cf6' },
-  logging: { name: 'CCL & Gamma Ray Sensor Sub', defaultOd: 2.875, defaultId: 1.250, defaultLen: 8.0, color: '#0ea5e9' },
-  nozzle_bit: { name: 'Concave Junk Mill / PDC Bit', defaultOd: 3.750, defaultId: 0.750, defaultLen: 1.5, color: '#10b981' },
-  custom: { name: 'Specialty Tool Sub', defaultOd: 2.875, defaultId: 1.250, defaultLen: 3.0, color: '#14b8a6' },
-};
 
 export const BhaConfigurationBuilder: React.FC<BhaConfigurationBuilderProps> = ({
   bhaConfig,
@@ -74,6 +66,8 @@ export const BhaConfigurationBuilder: React.FC<BhaConfigurationBuilderProps> = (
   const isMetric = unitSystem === 'metric';
   const [selectedPresetKey, setSelectedPresetKey] = useState<string>('custom');
   const [hoveredSegmentId, setHoveredSegmentId] = useState<string | null>(null);
+  const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
+  const [visualizationMode, setVisualizationMode] = useState<'3d' | '2d' | 'both'>('3d');
 
   const metrics = computeBhaSummaryMetrics(
     bhaConfig.segments,
@@ -275,10 +269,10 @@ export const BhaConfigurationBuilder: React.FC<BhaConfigurationBuilderProps> = (
         <div className="bg-slate-950/80 p-3 rounded-lg border border-slate-800">
           <div className="text-[10px] text-slate-400 uppercase font-medium">Air Weight</div>
           <div className="text-base font-bold font-mono text-white mt-0.5">
-            {isMetric ? `${metrics.totalAirWeightKg.toLocaleString()} kg` : `${metrics.totalAirWeightLbs.toLocaleString()} lbs`}
+            {isMetric ? `${(metrics.totalAirWeightKg ?? 0).toLocaleString()} kg` : `${(metrics.totalAirWeightLbs ?? 0).toLocaleString()} lbs`}
           </div>
           <div className="text-[10px] text-slate-500 mt-0.5">
-            Buoyed: {isMetric ? `${metrics.totalBuoyedWeightKg.toLocaleString()} kg` : `${metrics.totalBuoyedWeightLbs.toLocaleString()} lbs`}
+            Buoyed: {isMetric ? `${(metrics.totalBuoyedWeightKg ?? 0).toLocaleString()} kg` : `${(metrics.totalBuoyedWeightLbs ?? 0).toLocaleString()} lbs`}
           </div>
         </div>
 
@@ -350,161 +344,104 @@ export const BhaConfigurationBuilder: React.FC<BhaConfigurationBuilderProps> = (
         </div>
       )}
 
-      {/* Visual 2D Scaled Schematic of the Assembled BHA */}
-      <div className="bg-slate-950/90 rounded-xl border border-slate-800 p-4 space-y-3">
-        <div className="flex items-center justify-between text-xs">
-          <span className="font-semibold text-slate-200 flex items-center gap-2">
-            <Wrench className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Assembled Downhole String Schematic (Top of BHA &rarr; Bit / Nozzle)</span>
-          </span>
-          <span className="text-[10px] text-slate-500 font-mono">
-            Proportional 2D Profile • Scaled Outer Diameters
-          </span>
-        </div>
+      {/* Visual Assembled BHA (3D CAD & 2D Schematic) */}
+      <div className="bg-slate-950/90 rounded-xl border border-slate-800 p-4 space-y-3 shadow-lg">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-2">
+            <Wrench className="w-4 h-4 text-cyan-400" />
+            <span className="font-bold text-slate-100 text-sm">
+              Downhole Assembly Visualization
+            </span>
+            <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">
+              (Coiled Tubing &rarr; Toolstring &rarr; Bit / Nozzle)
+            </span>
+          </div>
 
-        {/* Schematic SVG Canvas */}
-        <div className="relative w-full h-36 bg-slate-900/90 rounded-lg border border-slate-800/80 p-2 overflow-x-auto flex items-center select-none">
-          {bhaConfig.segments.length === 0 ? (
-            <div className="w-full text-center text-xs text-slate-500 py-6">
-              No BHA segments configured. Click &ldquo;+ Add BHA Segment&rdquo; or pick a preset above.
-            </div>
-          ) : (
-            <svg 
-              className="h-28 min-w-[620px] w-full"
-              viewBox="0 0 740 110" 
-              preserveAspectRatio="xMidYMid meet"
+          {/* Visualization Mode Pills: 3D CAD vs 2D Schematic vs Split */}
+          <div className="flex items-center bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs">
+            <button
+              type="button"
+              onClick={() => setVisualizationMode('3d')}
+              className={`px-3 py-1 rounded-md flex items-center gap-1.5 font-medium transition-all ${
+                visualizationMode === '3d'
+                  ? 'bg-cyan-600 text-white font-semibold shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="Interactive 3D WebGL CAD View with Orbit, Cutaway, and Exploded View"
             >
-              {/* Background Reference Lines for Casing Inner Diameter */}
-              <line x1="10" y1="12" x2="730" y2="12" stroke="#334155" strokeWidth="1.5" strokeDasharray="4 4" />
-              <text x="12" y="10" fill="#64748b" fontSize="8" fontFamily="monospace">
-                Casing ID: {isMetric ? `${inToMm(casingInnerDiameterIn).toFixed(1)}mm` : `${casingInnerDiameterIn.toFixed(3)}"`}
-              </text>
-              <line x1="10" y1="98" x2="730" y2="98" stroke="#334155" strokeWidth="1.5" strokeDasharray="4 4" />
-
-              {/* Coiled Tubing Pipe Entry on Left (Top of BHA) */}
-              <g transform="translate(10, 55)">
-                {/* CT Body */}
-                <rect 
-                  x="0" 
-                  y={-(ct.outerDiameterIn / casingInnerDiameterIn) * 35} 
-                  width="55" 
-                  height={(ct.outerDiameterIn / casingInnerDiameterIn) * 70} 
-                  fill="#0284c7" 
-                  stroke="#38bdf8" 
-                  strokeWidth="1.5"
-                  rx="2"
-                />
-                <text 
-                  x="27" 
-                  y="3" 
-                  fill="#ffffff" 
-                  fontSize="7.5" 
-                  textAnchor="middle" 
-                  fontWeight="bold"
-                  fontFamily="monospace"
-                >
-                  CT {ct.outerDiameterIn}&quot;
-                </text>
-                <text 
-                  x="27" 
-                  y="-18" 
-                  fill="#94a3b8" 
-                  fontSize="7" 
-                  textAnchor="middle"
-                >
-                  Coiled Tubing
-                </text>
-              </g>
-
-              {/* Stacked BHA Segments from Left to Right */}
-              {(() => {
-                const totalLen = Math.max(1, metrics.totalLengthFt);
-                const availableWidth = 630;
-                let currentX = 70;
-
-                return bhaConfig.segments.map((seg, idx) => {
-                  // Proportionally allocate width with minimum 45px for label readability
-                  const rawW = (seg.lengthFt / totalLen) * availableWidth;
-                  const segW = Math.max(50, Math.min(180, rawW));
-                  const segHeight = Math.min(78, Math.max(14, (seg.outerDiameterIn / casingInnerDiameterIn) * 76));
-                  const isHovered = hoveredSegmentId === seg.id;
-                  const color = seg.color || TOOL_TYPE_DEFAULTS[seg.type]?.color || '#0ea5e9';
-
-                  const elem = (
-                    <g 
-                      key={seg.id} 
-                      transform={`translate(${currentX}, 55)`}
-                      onMouseEnter={() => setHoveredSegmentId(seg.id)}
-                      onMouseLeave={() => setHoveredSegmentId(null)}
-                      className="cursor-pointer transition-all"
-                    >
-                      {/* Segment Rect Body */}
-                      <rect
-                        x="0"
-                        y={-segHeight / 2}
-                        width={segW - 3}
-                        height={segHeight}
-                        fill={color}
-                        fillOpacity={isHovered ? 0.95 : 0.75}
-                        stroke={isHovered ? '#ffffff' : '#0f172a'}
-                        strokeWidth={isHovered ? 2 : 1}
-                        rx="3"
-                      />
-
-                      {/* Connector seam collar notches */}
-                      <rect x="-1" y={-segHeight / 2 - 2} width="3" height={segHeight + 4} fill="#475569" rx="1" />
-
-                      {/* Tool Name Label */}
-                      <text
-                        x={(segW - 3) / 2}
-                        y="1"
-                        fill="#ffffff"
-                        fontSize={segW < 70 ? '6.5' : '7.5'}
-                        fontWeight="bold"
-                        textAnchor="middle"
-                        fontFamily="JetBrains Mono, monospace"
-                      >
-                        {seg.type === 'nozzle_bit' ? 'BIT / NOZZLE' : seg.name.split(' ')[0]}
-                      </text>
-
-                      {/* OD and Length Subtitle */}
-                      <text
-                        x={(segW - 3) / 2}
-                        y={segHeight / 2 + 10}
-                        fill="#cbd5e1"
-                        fontSize="7"
-                        textAnchor="middle"
-                        fontFamily="monospace"
-                      >
-                        {seg.outerDiameterIn}&quot; &bull; {seg.lengthFt}ft
-                      </text>
-
-                      {/* Index bubble */}
-                      <circle cx={(segW - 3) / 2} cy={-segHeight / 2 - 8} r="5" fill="#1e293b" stroke={color} strokeWidth="1" />
-                      <text
-                        x={(segW - 3) / 2}
-                        y={-segHeight / 2 - 6}
-                        fill="#f1f5f9"
-                        fontSize="6"
-                        fontWeight="bold"
-                        textAnchor="middle"
-                      >
-                        {idx + 1}
-                      </text>
-                    </g>
-                  );
-
-                  currentX += segW;
-                  return elem;
-                });
-              })()}
-            </svg>
-          )}
+              <Boxes className="w-3.5 h-3.5" />
+              <span>3D Assembly</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setVisualizationMode('2d')}
+              className={`px-3 py-1 rounded-md flex items-center gap-1.5 font-medium transition-all ${
+                visualizationMode === '2d'
+                  ? 'bg-cyan-600 text-white font-semibold shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="Proportional 2D Cross-Section SVG Schematic"
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>2D Schematic</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setVisualizationMode('both')}
+              className={`px-3 py-1 rounded-md flex items-center gap-1.5 font-medium transition-all ${
+                visualizationMode === 'both'
+                  ? 'bg-cyan-600 text-white font-semibold shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="View both 3D CAD and 2D Schematic simultaneously"
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>Split (3D + 2D)</span>
+            </button>
+          </div>
         </div>
 
-        {/* Hovered Tool Detail Card */}
-        {hoveredSegmentId && (() => {
-          const seg = bhaConfig.segments.find((s) => s.id === hoveredSegmentId);
+        {/* 3D WebGL Assembly CAD View */}
+        {(visualizationMode === '3d' || visualizationMode === 'both') && (
+          <div className="w-full">
+            <BhaAssembly3DViewer
+              bhaConfig={bhaConfig}
+              ct={ct}
+              casingInnerDiameterIn={casingInnerDiameterIn}
+              fluidDensityPpg={fluidDensityPpg}
+              unitSystem={unitSystem}
+              selectedSegmentId={selectedSegmentId}
+              onSelectSegment={(id) => setSelectedSegmentId(id)}
+            />
+          </div>
+        )}
+
+        {/* 2D Scaled Realistic Vector Schematic */}
+        {(visualizationMode === '2d' || visualizationMode === 'both') && (
+          <div className="space-y-2">
+            {visualizationMode === 'both' && (
+              <div className="text-[11px] font-semibold text-slate-400 flex items-center gap-1.5 pt-1">
+                <Eye className="w-3 h-3 text-cyan-400" />
+                <span>2D Realistic Engineering Schematic</span>
+              </div>
+            )}
+            <BhaRealistic2DSchematic
+              bhaConfig={bhaConfig}
+              ct={ct}
+              casingInnerDiameterIn={casingInnerDiameterIn}
+              selectedSegmentId={selectedSegmentId}
+              onSelectSegment={(id) => setSelectedSegmentId(id)}
+              hoveredSegmentId={hoveredSegmentId}
+              onHoverSegment={(id) => setHoveredSegmentId(id)}
+              unitSystem={unitSystem}
+            />
+          </div>
+        )}
+
+        {/* Hovered or Selected Tool Detail Card */}
+        {(hoveredSegmentId || selectedSegmentId) && (() => {
+          const targetId = hoveredSegmentId || selectedSegmentId;
+          const seg = bhaConfig.segments.find((s) => s.id === targetId);
           if (!seg) return null;
           const linW = seg.linearWeightLbFt || calculateSegmentLinearWeight(seg.outerDiameterIn, seg.innerDiameterIn);
           const segTotalW = linW * seg.lengthFt;
@@ -517,6 +454,11 @@ export const BhaConfigurationBuilder: React.FC<BhaConfigurationBuilderProps> = (
                 <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: seg.color || '#0ea5e9' }} />
                 <span className="font-semibold text-white">{seg.name}</span>
                 <span className="text-[10px] text-slate-400 font-mono">({seg.type})</span>
+                {selectedSegmentId === seg.id && (
+                  <span className="text-[10px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.2 rounded border border-cyan-500/30">
+                    Selected
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-4 text-[11px] font-mono">
                 <span>OD: <strong className="text-cyan-300">{seg.outerDiameterIn}&quot;</strong></span>
@@ -591,8 +533,15 @@ export const BhaConfigurationBuilder: React.FC<BhaConfigurationBuilderProps> = (
                     return (
                       <tr 
                         key={seg.id}
-                        className={`hover:bg-slate-900/60 transition-colors ${
-                          hoveredSegmentId === seg.id ? 'bg-cyan-950/30' : ''
+                        onMouseEnter={() => setHoveredSegmentId(seg.id)}
+                        onMouseLeave={() => setHoveredSegmentId(null)}
+                        onClick={() => setSelectedSegmentId(selectedSegmentId === seg.id ? null : seg.id)}
+                        className={`hover:bg-slate-900/80 transition-colors cursor-pointer ${
+                          selectedSegmentId === seg.id
+                            ? 'bg-cyan-950/50 ring-1 ring-cyan-500/60'
+                            : hoveredSegmentId === seg.id
+                            ? 'bg-cyan-950/30'
+                            : ''
                         }`}
                       >
                         {/* Index */}

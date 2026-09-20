@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { 
   CoiledTubingString, 
   UnitSystem, 
   UsedCondition, 
   CorrosionPittingGrade, 
-  WorkingWeldType 
+  WorkingWeldType,
+  PublishedUsedDataset
 } from '../types/coiledTubing';
 import { 
   calculateUsedConditionComparison,
@@ -12,7 +13,12 @@ import {
   psiToMpa,
   lbfToKn
 } from '../utils/engineeringCalculations';
-import { USED_CONDITION_PRESETS } from '../data/presets';
+import { 
+  USED_CONDITION_PRESETS, 
+  PUBLISHED_USED_DATASETS, 
+  JPSE_ORTHOGONAL_DEFECT_TESTS, 
+  JPSE_RANGE_ANALYSIS 
+} from '../data/presets';
 import { EngineeringTooltip } from './EngineeringTooltip';
 import { 
   AlertTriangle, 
@@ -27,7 +33,17 @@ import {
   Sparkles, 
   Info,
   Layers,
-  RotateCcw
+  RotateCcw,
+  BookOpen,
+  ChevronDown,
+  ChevronUp,
+  FileText,
+  Database,
+  ExternalLink,
+  Beaker,
+  Zap,
+  Check,
+  Tag
 } from 'lucide-react';
 
 interface UsedConditionPanelProps {
@@ -44,6 +60,10 @@ export const UsedConditionPanel: React.FC<UsedConditionPanelProps> = ({
   compact = false,
 }) => {
   const isMetric = unitSystem === 'metric';
+  const [showPublishedDb, setShowPublishedDb] = useState(false);
+  const [activePresetCategory, setActivePresetCategory] = useState<'all' | 'field' | 'standards' | 'severe'>('all');
+  const [selectedPublishedId, setSelectedPublishedId] = useState<string | null>('fuling-shale-qt900-field');
+  const [showOrthogonalMatrix, setShowOrthogonalMatrix] = useState(false);
 
   // Current active condition or default
   const condition: UsedCondition = ct.usedCondition || {
@@ -132,25 +152,99 @@ export const UsedConditionPanel: React.FC<UsedConditionPanelProps> = ({
         </div>
       </div>
 
-      {/* Preset Buttons */}
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-            Field Situation Presets (API RP 5C7 / ICoTA Standards):
-          </span>
-          {condition.enabled && (
+      {/* Preset Buttons & Category Selector */}
+      <div className="space-y-2">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+              Field Situation Presets:
+            </span>
+            <div className="flex items-center gap-1 bg-slate-950 p-0.5 rounded-lg border border-slate-800 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setActivePresetCategory('all')}
+                className={`px-2 py-0.5 rounded font-medium transition-colors ${
+                  activePresetCategory === 'all'
+                    ? 'bg-amber-500/20 text-amber-300 font-bold'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                All ({USED_CONDITION_PRESETS.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setActivePresetCategory('field')}
+                className={`px-2 py-0.5 rounded font-medium transition-colors ${
+                  activePresetCategory === 'field'
+                    ? 'bg-amber-500/20 text-amber-300 font-bold'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Field Cases
+              </button>
+              <button
+                type="button"
+                onClick={() => setActivePresetCategory('standards')}
+                className={`px-2 py-0.5 rounded font-medium transition-colors ${
+                  activePresetCategory === 'standards'
+                    ? 'bg-amber-500/20 text-amber-300 font-bold'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Standards (API / CIRCA)
+              </button>
+              <button
+                type="button"
+                onClick={() => setActivePresetCategory('severe')}
+                className={`px-2 py-0.5 rounded font-medium transition-colors ${
+                  activePresetCategory === 'severe'
+                    ? 'bg-amber-500/20 text-amber-300 font-bold'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Severe / Sour
+              </button>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => handleApplyPreset('nominal')}
-              className="text-[11px] text-slate-400 hover:text-cyan-400 flex items-center gap-1 transition-colors"
+              onClick={() => setShowPublishedDb(!showPublishedDb)}
+              className="text-[11px] text-cyan-400 hover:text-cyan-300 bg-cyan-950/60 border border-cyan-700/50 hover:border-cyan-500 px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition-all shadow-sm"
             >
-              <RotateCcw className="w-3 h-3" />
-              Reset to 100% Nominal
+              <BookOpen className="w-3.5 h-3.5" />
+              <span>{showPublishedDb ? 'Hide Published Case Studies' : 'Browse Published Field Datasets (JPSE / CIRCA)'}</span>
+              {showPublishedDb ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
             </button>
-          )}
+
+            {condition.enabled && (
+              <button
+                type="button"
+                onClick={() => handleApplyPreset('nominal')}
+                className="text-[11px] text-slate-400 hover:text-cyan-400 flex items-center gap-1 transition-colors"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Reset 100% Nominal
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Filtered Preset Grid */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-          {USED_CONDITION_PRESETS.map((preset) => {
+          {USED_CONDITION_PRESETS.filter((preset) => {
+            if (activePresetCategory === 'field') {
+              return ['fuling-shale-qt900-case', 'vaca-muerta-plug-milling-case', 'overdisplaced-frac-cleanout-case'].includes(preset.id);
+            }
+            if (activePresetCategory === 'standards') {
+              return ['nominal', 'standard-used', 'circa-ballooning-limit-case', 'circa-severe-ballooning-case', 'retirement-limit'].includes(preset.id);
+            }
+            if (activePresetCategory === 'severe') {
+              return ['corroded-pitted', 'heavy-workover', 'high-ovality'].includes(preset.id);
+            }
+            return true;
+          }).map((preset) => {
             const isSelected =
               condition.enabled === preset.condition.enabled &&
               Math.abs(condition.wallLossPercent - preset.condition.wallLossPercent) < 0.1 &&
@@ -175,11 +269,273 @@ export const UsedConditionPanel: React.FC<UsedConditionPanelProps> = ({
                     {preset.badge}
                   </div>
                 </div>
+                {preset.condition.defectDepthMm && (
+                  <div className="text-[9px] font-mono text-amber-400 mt-1 bg-amber-950/60 px-1 py-0.5 rounded border border-amber-800/50 inline-block">
+                    Pit: {preset.condition.defectDepthMm}mm
+                  </div>
+                )}
               </button>
             );
           })}
         </div>
       </div>
+
+      {/* Expandable Published Real Field & Experimental Defect Database */}
+      {showPublishedDb && (
+        <div className="bg-slate-950 border border-cyan-800/60 rounded-xl p-4 space-y-4 shadow-xl animate-fadeIn">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-800">
+            <div className="flex items-center gap-2">
+              <Database className="w-4 h-4 text-cyan-400" />
+              <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                Published Real Field & Experimental Used CT Datasets (JPSE / CIRCA Standards)
+              </h4>
+            </div>
+            <span className="text-[10px] font-mono text-cyan-300 bg-cyan-950 px-2 py-0.5 rounded border border-cyan-800">
+              {PUBLISHED_USED_DATASETS.length} Validated Datasets Available
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+            {PUBLISHED_USED_DATASETS.map((ds) => {
+              const isSelected = selectedPublishedId === ds.id;
+              return (
+                <div
+                  key={ds.id}
+                  onClick={() => setSelectedPublishedId(ds.id)}
+                  className={`p-3.5 rounded-xl border cursor-pointer transition-all flex flex-col justify-between ${
+                    isSelected
+                      ? 'bg-slate-900 border-cyan-500 shadow-md shadow-cyan-950/50 ring-1 ring-cyan-500/50'
+                      : 'bg-slate-900/60 hover:bg-slate-900 border-slate-800 hover:border-slate-700 text-slate-300'
+                  }`}
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-1 flex-wrap">
+                      <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                        ds.category === 'field_case'
+                          ? 'bg-amber-950 text-amber-300 border border-amber-800'
+                          : ds.category === 'experimental_defect'
+                          ? 'bg-purple-950 text-purple-300 border border-purple-800'
+                          : 'bg-cyan-950 text-cyan-300 border border-cyan-800'
+                      }`}>
+                        {ds.category === 'field_case' ? 'Real Field Case' : ds.category === 'experimental_defect' ? 'Orthogonal Lab Test' : 'Software Standard'}
+                      </span>
+                      <span className="text-[10px] font-mono text-slate-400">{ds.nominalString.grade}</span>
+                    </div>
+
+                    <h5 className="text-xs font-bold text-white leading-snug">
+                      {ds.title}
+                    </h5>
+
+                    <p className="text-[11px] text-slate-400 line-clamp-2">
+                      {ds.fieldLocation} &bull; {ds.operationalEnvironment.fluidOrSlurry}
+                    </p>
+
+                    {/* Defect Summary Pill */}
+                    <div className="p-2 rounded bg-slate-950 border border-slate-800 text-[10px] font-mono space-y-1">
+                      <div className="flex justify-between text-slate-400">
+                        <span>Wall Loss:</span>
+                        <span className="text-amber-400 font-bold">-{ds.defectSummary.wallLossPct}%</span>
+                      </div>
+                      <div className="flex justify-between text-slate-400">
+                        <span>Ovality / Ballooning:</span>
+                        <span className="text-cyan-400 font-bold">{ds.defectSummary.ovalityPct}% / +{ds.defectSummary.ballooningPct}%</span>
+                      </div>
+                      {ds.defectSummary.pitDepthMm && (
+                        <div className="flex justify-between text-slate-400">
+                          <span>Pit Depth (c₀):</span>
+                          <span className="text-rose-400 font-bold">{ds.defectSummary.pitDepthMm} mm</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between text-slate-400">
+                        <span>Fatigue Consumed:</span>
+                        <span className="text-purple-400 font-bold">{ds.defectSummary.fatigueUsedPct}%</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex items-center justify-between">
+                    <span className="text-[9px] text-slate-500 font-sans italic truncate max-w-[170px]">
+                      {ds.sourceCitation}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onChangeCondition({
+                          ...ds.condition,
+                          notes: `Imported from: ${ds.title} (${ds.sourceCitation})`,
+                        });
+                      }}
+                      className="px-2.5 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-medium text-[11px] flex items-center gap-1 transition-colors shrink-0 shadow-sm"
+                    >
+                      <Check className="w-3 h-3" />
+                      Apply Condition
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Selected Dataset Detail Inspection Panel */}
+          {(() => {
+            const activeDataset = PUBLISHED_USED_DATASETS.find((d) => d.id === selectedPublishedId);
+            if (!activeDataset) return null;
+            return (
+              <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <FileText className="w-4 h-4 text-amber-400" />
+                      <h5 className="text-xs font-bold text-white">
+                        {activeDataset.title} &bull; Detailed Technical Validation
+                      </h5>
+                    </div>
+                    <span className="text-[10px] text-slate-400 mt-0.5 block">
+                      Citation: {activeDataset.sourceCitation}
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onChangeCondition({
+                        ...activeDataset.condition,
+                        notes: `Imported from: ${activeDataset.title} (${activeDataset.sourceCitation})`,
+                      });
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs flex items-center gap-1.5 transition-colors self-start sm:self-auto shadow-sm"
+                  >
+                    <Zap className="w-3.5 h-3.5" />
+                    Load Into Active String
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs font-mono">
+                  <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+                    <span className="text-[10px] text-slate-500 block uppercase">Nominal Pipe</span>
+                    <span className="font-bold text-white text-xs mt-0.5 block">
+                      {activeDataset.nominalString.odIn.toFixed(3)}" OD &bull; {activeDataset.nominalString.wtIn.toFixed(3)}" Wall
+                    </span>
+                    <span className="text-[10px] text-cyan-400">
+                      {activeDataset.nominalString.grade} &bull; {activeDataset.nominalString.totalLengthFt.toLocaleString()} ft
+                    </span>
+                  </div>
+
+                  <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+                    <span className="text-[10px] text-slate-500 block uppercase">Wellbore Environment</span>
+                    <span className="font-bold text-white text-xs mt-0.5 block truncate">
+                      {activeDataset.fieldLocation}
+                    </span>
+                    <span className="text-[10px] text-amber-400">
+                      {activeDataset.operationalEnvironment.internalPressurePsi ? `P_int: ${activeDataset.operationalEnvironment.internalPressurePsi} psi` : 'Circulating test'}
+                    </span>
+                  </div>
+
+                  <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+                    <span className="text-[10px] text-slate-500 block uppercase">Defect Geometry</span>
+                    <span className="font-bold text-white text-xs mt-0.5 block">
+                      {activeDataset.defectSummary.pitDepthMm
+                        ? `Depth: ${activeDataset.defectSummary.pitDepthMm} mm (${activeDataset.defectSummary.pitAngleDeg || 0}°)`
+                        : `Wall Loss: ${activeDataset.defectSummary.wallLossPct}%`}
+                    </span>
+                    <span className="text-[10px] text-rose-400">
+                      Ballooning: +{activeDataset.defectSummary.ballooningPct}% &bull; Ovality: {activeDataset.defectSummary.ovalityPct}%
+                    </span>
+                  </div>
+
+                  <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+                    <span className="text-[10px] text-slate-500 block uppercase">Measured Outcomes</span>
+                    <span className="font-bold text-emerald-400 text-xs mt-0.5 block">
+                      {activeDataset.measuredOutcome.tripsRemainingLimit
+                        ? `${activeDataset.measuredOutcome.tripsRemainingLimit} Trips Safe Margin`
+                        : activeDataset.measuredOutcome.remainingCycles
+                        ? `${activeDataset.measuredOutcome.remainingCycles} Cycles Left`
+                        : 'Field Calibrated'}
+                    </span>
+                    <span className="text-[10px] text-slate-400 truncate block" title={activeDataset.measuredOutcome.failureMode}>
+                      {activeDataset.measuredOutcome.failureMode}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Optional: Show JPSE Orthogonal Matrix if this is the experimental defect test */}
+                {(activeDataset.id === 'fuling_case_qt900' || activeDataset.id === 'jpse_pit_defect_05mm') && (
+                  <div className="mt-3 pt-3 border-t border-slate-800">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[11px] font-bold text-purple-300 flex items-center gap-1.5">
+                        <Beaker className="w-3.5 h-3.5 text-purple-400" />
+                        JPSE Orthogonal Defect Test Matrix L₁₆(4⁴) Experimental Data:
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setShowOrthogonalMatrix(!showOrthogonalMatrix)}
+                        className="text-[10px] text-purple-400 hover:text-purple-300 underline"
+                      >
+                        {showOrthogonalMatrix ? 'Hide Test Table' : 'Show All 16 Test Specimens'}
+                      </button>
+                    </div>
+
+                    {showOrthogonalMatrix && (
+                      <div className="overflow-x-auto max-h-52 overflow-y-auto">
+                        <table className="w-full text-[10px] font-mono text-left">
+                          <thead className="bg-slate-950 text-slate-400 border-b border-slate-800 sticky top-0">
+                            <tr>
+                              <th className="py-1.5 px-2">Sample</th>
+                              <th className="py-1.5 px-2">Pit Depth c₀ (mm)</th>
+                              <th className="py-1.5 px-2">Angle α (°)</th>
+                              <th className="py-1.5 px-2">Length a (mm)</th>
+                              <th className="py-1.5 px-2">Width b (mm)</th>
+                              <th className="py-1.5 px-2 text-right">Bends to Leakage N</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60">
+                            {JPSE_ORTHOGONAL_DEFECT_TESTS.map((test) => (
+                              <tr key={test.sampleId} className="hover:bg-slate-800/40">
+                                <td className="py-1 px-2 font-bold text-cyan-400">#{test.sampleId}</td>
+                                <td className="py-1 px-2 text-white">{test.pitDepthMm} mm</td>
+                                <td className="py-1 px-2 text-slate-300">{test.axialAngleDeg}°</td>
+                                <td className="py-1 px-2 text-slate-300">{test.pitLengthMm} mm</td>
+                                <td className="py-1 px-2 text-slate-300">{test.pitWidthMm} mm</td>
+                                <td className="py-1 px-2 text-right font-bold text-amber-400">{test.cyclicBendsN} cycles</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    <div className="text-[10px] text-slate-400 mt-1.5">
+                      Range Analysis Result: <strong>Factor A (Pit Depth c₀, R=120.25)</strong> governs fatigue life reduction, followed by Factor D (Width, R=49.50), Factor B (Angle, R=44.25), and Factor C (Length, R=28.50).
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Active Defect Geometry Inspection Banner if Defect Depth is present */}
+      {condition.defectDepthMm && (
+        <div className="bg-amber-950/40 border border-amber-600/50 rounded-xl p-3 text-xs flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <div className="p-1.5 bg-amber-500/20 text-amber-400 rounded-md">
+              <Beaker className="w-4 h-4" />
+            </div>
+            <div>
+              <span className="font-bold text-amber-300 block">
+                Active Measured Pit Defect: {condition.defectDepthMm} mm Depth ({condition.defectAngleDeg ?? 0}° Orientation)
+              </span>
+              <span className="text-[10px] text-slate-400">
+                Dimensions: {condition.defectLengthMm ?? 10} mm (a) &times; {condition.defectWidthMm ?? 5} mm (b) &bull; Tested at 35 MPa (5,076 psi)
+              </span>
+            </div>
+          </div>
+          <span className="text-[10px] font-mono text-amber-300 bg-amber-950 px-2 py-0.5 rounded border border-amber-700 shrink-0">
+            JPSE 198 Correlated
+          </span>
+        </div>
+      )}
 
       {/* API RP 5C7 Retirement Advisory Alert */}
       <div className={`p-3.5 rounded-xl border flex items-start gap-3 transition-colors ${

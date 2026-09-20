@@ -14,6 +14,18 @@ import {
   calculateGeometry
 } from '../utils/engineeringCalculations';
 import {
+  TfaPredictedPoint,
+  TfaFitStatistics,
+  calculateTfaFitStatistics,
+  getTfaFieldRunPresets,
+  enrichActualPoint,
+  getNextWellId,
+  generateNewWellRunLog,
+  calculateTfaPredictedCurve
+} from '../utils/tfaCalculations';
+import { TfaActualDataTable } from './TfaActualDataTable';
+import { TfaEngineeringAdvisorChat } from './TfaEngineeringAdvisorChat';
+import {
   Activity,
   Upload,
   Download,
@@ -30,7 +42,19 @@ import {
   Info,
   Maximize2,
   Minimize2,
-  HelpCircle
+  HelpCircle,
+  Sparkles,
+  Layers,
+  MessageSquare,
+  Plus,
+  PlusCircle,
+  ArrowRight,
+  Building2,
+  MapPin,
+  Compass,
+  Check,
+  CornerDownRight,
+  X
 } from 'lucide-react';
 
 interface TfaPredictedVsActualChartProps {
@@ -61,10 +85,33 @@ export const TfaPredictedVsActualChart: React.FC<TfaPredictedVsActualChartProps>
   });
 
   const [theme, setTheme] = useState<'classic' | 'dark'>('classic');
-  const [activeWellPreset, setActiveWellPreset] = useState<'MRJN-764' | 'DEEP-GAS' | 'EXTENDED-REACH'>('MRJN-764');
+  const [activeWellPreset, setActiveWellPreset] = useState<'MRJN-764' | 'DEEP-GAS' | 'EXTENDED-REACH' | 'CUSTOM'>('MRJN-764');
   const [showControls, setShowControls] = useState<boolean>(true);
   const [showImportModal, setShowImportModal] = useState<boolean>(false);
+  const [showNewWellModal, setShowNewWellModal] = useState<boolean>(false);
+  const [nextWellToast, setNextWellToast] = useState<string | null>(null);
   const [importText, setImportText] = useState<string>('');
+
+  // Auto-calculated Next Well suggestion ID
+  const nextWellSuggestion = useMemo(() => {
+    return getNextWellId(config.wellName);
+  }, [config.wellName]);
+
+  // Form state for New Well / Next Well configuration modal
+  const [newWellForm, setNewWellForm] = useState({
+    wellName: getNextWellId(defaultWellName),
+    operator: 'Saudi Aramco',
+    wellPad: 'Pad Alpha-01',
+    wellTrajectory: 'deviated' as 'vertical' | 'deviated' | 'horizontal' | 'deep_gas',
+    targetDepthM: 2500,
+    kickoffDepthM: 500,
+    maxInclinationDeg: 48,
+    whpPsi: 450,
+    fluidDensityPpg: 8.4,
+    frictionCasing: 0.24,
+    weightOffsetLbf: -140,
+    initLogMode: 'sample' as 'sample' | 'blank' | 'offset',
+  });
 
   // Mouse coordinate tracking on SVG
   const [hoverPos, setHoverPos] = useState<{ depthM: number; weightLbf: number } | null>({
@@ -95,76 +142,20 @@ export const TfaPredictedVsActualChart: React.FC<TfaPredictedVsActualChartProps>
   const stripperFrictionLbf = 800 + config.whpPsi * 0.15;
 
   // Max Depth and Max Load for chart bounds
-  const maxDepthM = activeWellPreset === 'DEEP-GAS' ? 4500 : activeWellPreset === 'EXTENDED-REACH' ? 3500 : 2500;
+  const effectiveMaxDepthM = useMemo(() => {
+    if (config.targetDepthM && config.targetDepthM > 0) {
+      return config.targetDepthM;
+    }
+    return activeWellPreset === 'DEEP-GAS' ? 4500 : activeWellPreset === 'EXTENDED-REACH' ? 3500 : 2500;
+  }, [config.targetDepthM, activeWellPreset]);
+
+  const maxDepthM = effectiveMaxDepthM;
   const maxWeightLbf = 40000;
 
   // Generate Predicted Curves (Expected POH, Expected RIH, OPLIM POH, Friction Lock)
   const predictedCurve = useMemo(() => {
-    const pointsCount = 120;
-    const stepM = maxDepthM / pointsCount;
-    const curve: {
-      depthM: number;
-      depthFt: number;
-      expectedPohLbf: number;
-      expectedRihLbf: number;
-      oplimPohLbf: number;
-      oplimRihLbf: number;
-      frictionLockRihLbf: number;
-    }[] = [];
-
-    // Tensile yield of string
-    const tensileYieldLbf = ct.yieldStrengthPsi * geom.crossSectionalAreaSqIn;
-    const safeOverpullCapLbf = tensileYieldLbf * 0.8;
-
-    for (let i = 0; i <= pointsCount; i++) {
-      const dM = i * stepM;
-      const dFt = mToFt(dM);
-
-      // Wellbore deviation profile based on preset
-      let avgIncDeg = 15;
-      if (activeWellPreset === 'MRJN-764') {
-        // Deviated S-well: kicks off at 500m, reaches 48 deg by 1800m
-        avgIncDeg = dM < 500 ? 2 : Math.min(52, 2 + ((dM - 500) / 1300) * 48);
-      } else if (activeWellPreset === 'EXTENDED-REACH') {
-        avgIncDeg = dM < 800 ? 5 : Math.min(88, 5 + ((dM - 800) / 1200) * 83);
-      } else {
-        avgIncDeg = dM < 1200 ? 4 : Math.min(35, 4 + ((dM - 1200) / 2000) * 31);
-      }
-
-      const incRad = (avgIncDeg * Math.PI) / 180;
-      const cosInc = Math.cos(incRad);
-      const sinInc = Math.sin(incRad);
-
-      // True Vertical Depth component and Normal force
-      const normalContactForceLbf = (wBuoyedLbM * sinInc * dM) + (dM > 1000 ? 800 : 200); // include small dogleg normal load
-      const cumulativeDragLbf = config.frictionCasing * normalContactForceLbf;
-
-      // Axial string weight in wellbore
-      const axialWeightLbf = wBuoyedLbM * cosInc * dM;
-
-      // Surface POH = Axial Weight + Drag + Stripper Friction - Piston Upthrust + Weight Offset
-      const rawPoh = axialWeightLbf + cumulativeDragLbf + stripperFrictionLbf - pistonUpthrustLbf + config.weightOffsetLbf;
-      // Surface RIH = Axial Weight - Drag - Stripper Friction - Piston Upthrust + Weight Offset
-      const rawRih = axialWeightLbf - cumulativeDragLbf - stripperFrictionLbf - pistonUpthrustLbf + config.weightOffsetLbf;
-
-      // OPLIM POH = Safe yield limit minus residual tension
-      const oplimPoh = Math.min(38000, safeOverpullCapLbf * 0.75 + (dM / maxDepthM) * 6000);
-      // Friction lock threshold (when compression exceeds helical buckling limit)
-      const frictionLock = Math.max(0, 18000 - (dM / maxDepthM) * 16000);
-
-      curve.push({
-        depthM: dM,
-        depthFt: dFt,
-        expectedPohLbf: Math.max(0, rawPoh),
-        expectedRihLbf: rawRih,
-        oplimPohLbf: oplimPoh,
-        oplimRihLbf: 32000,
-        frictionLockRihLbf: frictionLock,
-      });
-    }
-
-    return curve;
-  }, [ct, geom, wBuoyedLbM, config, maxDepthM, activeWellPreset]);
+    return calculateTfaPredictedCurve(ct, config, effectiveMaxDepthM, 120, activeWellPreset);
+  }, [ct, config, effectiveMaxDepthM, activeWellPreset]);
 
   // Realistic E-Weight (Actual Measured Weight) log points matching the photo
   // Photo features:
@@ -243,6 +234,119 @@ export const TfaPredictedVsActualChart: React.FC<TfaPredictedVsActualChartProps>
   }, [predictedCurve, maxDepthM]);
 
   const [actualLog, setActualLog] = useState<TfaDataPoint[]>(defaultEWeightLog);
+  const [activeTfaSubView, setActiveTfaSubView] = useState<'chart' | 'data' | 'chat' | 'split'>('chart');
+  const [selectedPoint, setSelectedPoint] = useState<TfaDataPoint | null>(null);
+
+  // Fit statistics calculated across actual points vs predicted model
+  const fitStats = useMemo<TfaFitStatistics>(() => {
+    return calculateTfaFitStatistics(actualLog, predictedCurve, config.frictionCasing);
+  }, [actualLog, predictedCurve, config.frictionCasing]);
+
+  const handleAddPoint = (point: TfaDataPoint) => {
+    setActualLog((prev) => {
+      const updated = [...prev, point].sort((a, b) => a.depthM - b.depthM);
+      return updated;
+    });
+    if (point.depthM > playbackDepthM) {
+      setPlaybackDepthM(point.depthM);
+    }
+  };
+
+  const handleDeletePoint = (index: number) => {
+    setActualLog((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleClearAll = () => {
+    setActualLog([]);
+  };
+
+  const handleLoadPreset = (presetId: string) => {
+    const presets = getTfaFieldRunPresets(activeWellPreset);
+    const found = presets.find((p) => p.id === presetId);
+    if (found) {
+      setActualLog(found.points);
+      if (found.points.length > 0) {
+        setPlaybackDepthM(found.points[found.points.length - 1].depthM);
+      }
+    }
+  };
+
+  const handleApplyCalibratedMu = (calibratedMu: number) => {
+    setConfig((prev) => ({
+      ...prev,
+      frictionCasing: calibratedMu,
+    }));
+  };
+
+  // One-click quick advance to next well (e.g. MRJN-764 -> MRJN-765)
+  const handleQuickNextWell = () => {
+    const nextName = getNextWellId(config.wellName);
+    const updatedConfig: TfaChartConfig = {
+      ...config,
+      wellName: nextName,
+    };
+    setConfig(updatedConfig);
+    setActiveWellPreset('CUSTOM');
+
+    // Generate fresh initial run log for the next well
+    const newLog = generateNewWellRunLog(effectiveMaxDepthM, 'sample');
+    setActualLog(newLog);
+    setPlaybackDepthM(effectiveMaxDepthM);
+
+    setNextWellToast(`Switched to Next Well: ${nextName}. Real-time calculation & matching initialized.`);
+    setTimeout(() => setNextWellToast(null), 4000);
+  };
+
+  // Open New Well configuration modal prefilled with current settings & next well ID
+  const handleOpenNewWellModal = () => {
+    setNewWellForm({
+      wellName: getNextWellId(config.wellName),
+      operator: config.operator || 'Saudi Aramco',
+      wellPad: config.wellPad || 'Pad Alpha-01',
+      wellTrajectory: (config.wellTrajectory || 'deviated') as 'vertical' | 'deviated' | 'horizontal' | 'deep_gas',
+      targetDepthM: config.targetDepthM || (isMetric ? 2500 : Math.round(ftToM(8200))),
+      kickoffDepthM: config.kickoffDepthM || 500,
+      maxInclinationDeg: config.maxInclinationDeg || 48,
+      whpPsi: config.whpPsi || 450,
+      fluidDensityPpg: config.fluidDensityPpg || 8.4,
+      frictionCasing: config.frictionCasing || 0.24,
+      weightOffsetLbf: config.weightOffsetLbf || -140,
+      initLogMode: 'sample',
+    });
+    setShowNewWellModal(true);
+  };
+
+  // Apply new well form inputs
+  const handleApplyNewWell = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const targetM = newWellForm.targetDepthM > 0 ? newWellForm.targetDepthM : 2500;
+
+    const updatedConfig: TfaChartConfig = {
+      ...config,
+      wellName: newWellForm.wellName.trim() || getNextWellId(config.wellName),
+      operator: newWellForm.operator.trim(),
+      wellPad: newWellForm.wellPad.trim(),
+      wellTrajectory: newWellForm.wellTrajectory,
+      targetDepthM: targetM,
+      kickoffDepthM: newWellForm.kickoffDepthM,
+      maxInclinationDeg: newWellForm.maxInclinationDeg,
+      whpPsi: newWellForm.whpPsi,
+      fluidDensityPpg: newWellForm.fluidDensityPpg,
+      frictionCasing: newWellForm.frictionCasing,
+      weightOffsetLbf: newWellForm.weightOffsetLbf,
+    };
+
+    setConfig(updatedConfig);
+    setActiveWellPreset('CUSTOM');
+
+    const newLog = generateNewWellRunLog(targetM, newWellForm.initLogMode);
+    setActualLog(newLog);
+    setPlaybackDepthM(targetM);
+    setShowNewWellModal(false);
+
+    setNextWellToast(`Created and loaded well "${updatedConfig.wellName}" (${updatedConfig.wellTrajectory.toUpperCase()} • ${Math.round(isMetric ? targetM : mToFt(targetM)).toLocaleString()} ${isMetric ? 'm' : 'ft'}).`);
+    setTimeout(() => setNextWellToast(null), 4500);
+  };
 
   // Playback timer effect
   useEffect(() => {
@@ -448,6 +552,23 @@ export const TfaPredictedVsActualChart: React.FC<TfaPredictedVsActualChartProps>
 
   return (
     <div className="space-y-3 font-sans">
+      {/* Next Well / New Well Feedback Notification */}
+      {nextWellToast && (
+        <div className="bg-emerald-950/90 border border-emerald-600/70 text-emerald-200 px-3.5 py-2 rounded-xl text-xs flex items-center justify-between shadow-lg">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span className="font-medium">{nextWellToast}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setNextWellToast(null)}
+            className="text-emerald-400 hover:text-white text-xs px-2 py-0.5 rounded bg-emerald-900/60 font-semibold"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* 1. Authentic Top Ribbon matching the user's photo */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg">
         {/* Real-time Hardware Indicators & Offsets Header */}
@@ -511,15 +632,15 @@ export const TfaPredictedVsActualChart: React.FC<TfaPredictedVsActualChartProps>
 
         {/* 2. Operational Control Ribbon & Matching Sliders */}
         <div className="p-3 bg-slate-900 flex flex-wrap items-center justify-between gap-3 text-xs">
-          {/* Preset Selector */}
-          <div className="flex items-center gap-2">
+          {/* Preset & New/Next Well Selector */}
+          <div className="flex items-center flex-wrap gap-2">
             <span className="text-slate-400 font-medium">Well Matching:</span>
             <div className="flex bg-slate-950 p-0.5 rounded-lg border border-slate-800">
               <button
                 type="button"
                 onClick={() => {
                   setActiveWellPreset('MRJN-764');
-                  setConfig((c) => ({ ...c, wellName: 'MRJN-764', frictionCasing: 0.24 }));
+                  setConfig((c) => ({ ...c, wellName: 'MRJN-764', frictionCasing: 0.24, targetDepthM: undefined, wellTrajectory: undefined }));
                 }}
                 className={`px-3 py-1 rounded-md text-xs font-semibold transition-all ${
                   activeWellPreset === 'MRJN-764'
@@ -533,7 +654,7 @@ export const TfaPredictedVsActualChart: React.FC<TfaPredictedVsActualChartProps>
                 type="button"
                 onClick={() => {
                   setActiveWellPreset('DEEP-GAS');
-                  setConfig((c) => ({ ...c, wellName: 'DEEP-GAS-01', frictionCasing: 0.28 }));
+                  setConfig((c) => ({ ...c, wellName: 'DEEP-GAS-01', frictionCasing: 0.28, targetDepthM: undefined, wellTrajectory: undefined }));
                 }}
                 className={`px-3 py-1 rounded-md text-xs font-semibold transition-all ${
                   activeWellPreset === 'DEEP-GAS'
@@ -547,7 +668,7 @@ export const TfaPredictedVsActualChart: React.FC<TfaPredictedVsActualChartProps>
                 type="button"
                 onClick={() => {
                   setActiveWellPreset('EXTENDED-REACH');
-                  setConfig((c) => ({ ...c, wellName: 'ER-WELL-09', frictionCasing: 0.32 }));
+                  setConfig((c) => ({ ...c, wellName: 'ER-WELL-09', frictionCasing: 0.32, targetDepthM: undefined, wellTrajectory: undefined }));
                 }}
                 className={`px-3 py-1 rounded-md text-xs font-semibold transition-all ${
                   activeWellPreset === 'EXTENDED-REACH'
@@ -556,6 +677,35 @@ export const TfaPredictedVsActualChart: React.FC<TfaPredictedVsActualChartProps>
                 }`}
               >
                 Extended Reach (Lockup)
+              </button>
+              {activeWellPreset === 'CUSTOM' && (
+                <span className="px-3 py-1 rounded-md text-xs font-semibold bg-emerald-600 text-white shadow-sm flex items-center gap-1">
+                  <Check className="w-3 h-3 text-emerald-200" />
+                  <span>{config.wellName} (Custom)</span>
+                </span>
+              )}
+            </div>
+
+            {/* Next Well and New Well Quick Buttons */}
+            <div className="flex items-center gap-1.5 ml-1">
+              <button
+                type="button"
+                onClick={handleQuickNextWell}
+                className="px-2.5 py-1 bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-700/60 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
+                title={`Advance immediately to next sequential well ID (${nextWellSuggestion})`}
+              >
+                <ArrowRight className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Next Well ({nextWellSuggestion})</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleOpenNewWellModal}
+                className="px-2.5 py-1 bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-700/60 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
+                title="Configure custom new or next well trajectory, depths, and pad parameters"
+              >
+                <PlusCircle className="w-3.5 h-3.5 text-cyan-400" />
+                <span>New Well Setup</span>
               </button>
             </div>
           </div>
@@ -613,9 +763,175 @@ export const TfaPredictedVsActualChart: React.FC<TfaPredictedVsActualChartProps>
             </button>
           </div>
         </div>
+
+        {/* Active Well Configuration & Target Parameters Bar */}
+        <div className="bg-slate-950/90 border-t border-slate-800/80 px-4 py-2 flex flex-wrap items-center justify-between gap-2.5 text-xs text-slate-300">
+          <div className="flex items-center flex-wrap gap-2.5 text-[11px]">
+            <span className="flex items-center gap-1 font-semibold text-cyan-300 bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-800/60">
+              <Compass className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Well: {config.wellName}</span>
+            </span>
+            <span className="text-slate-600">&bull;</span>
+            <span className="text-slate-400">
+              Operator: <strong className="text-slate-200">{config.operator || 'Saudi Aramco'}</strong>
+            </span>
+            <span className="text-slate-600">&bull;</span>
+            <span className="text-slate-400">
+              Pad: <strong className="text-slate-200">{config.wellPad || 'Pad A'}</strong>
+            </span>
+            <span className="text-slate-600">&bull;</span>
+            <span className="text-slate-400">
+              Trajectory: <span className="uppercase text-amber-300 font-mono font-semibold">{config.wellTrajectory || 'DEVIATED'}</span>
+            </span>
+            <span className="text-slate-600">&bull;</span>
+            <span className="text-slate-400">
+              Target MD: <strong className="text-emerald-300 font-mono">{Math.round(isMetric ? effectiveMaxDepthM : mToFt(effectiveMaxDepthM)).toLocaleString()} {isMetric ? 'm' : 'ft'}</strong>
+            </span>
+            <span className="text-slate-600">&bull;</span>
+            <span className="text-slate-400">
+              WHP: <strong className="text-rose-300 font-mono">{config.whpPsi} psi</strong>
+            </span>
+            <span className="text-slate-600">&bull;</span>
+            <span className="text-slate-400">
+              Mud: <strong className="text-cyan-300 font-mono">{config.fluidDensityPpg} ppg</strong>
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleOpenNewWellModal}
+            className="text-[11px] text-cyan-400 hover:text-cyan-200 flex items-center gap-1 font-medium underline underline-offset-2 ml-auto"
+          >
+            <span>Update Trajectory &amp; Depths</span>
+            <CornerDownRight className="w-3 h-3" />
+          </button>
+        </div>
       </div>
 
-      {/* 3. Primary SVG TFA Chart Canvas (Matching the exact look of Cerberus / CTES Orion) */}
+      {/* 2.1 View Mode Navigation Tabs */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900 p-2.5 rounded-xl border border-slate-800">
+        <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-lg border border-slate-800/80">
+          <button
+            type="button"
+            onClick={() => setActiveTfaSubView('chart')}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all ${
+              activeTfaSubView === 'chart'
+                ? 'bg-cyan-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Activity className="w-3.5 h-3.5 text-cyan-200" />
+            <span>TFA Chart</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTfaSubView('data')}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all ${
+              activeTfaSubView === 'data'
+                ? 'bg-cyan-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-cyan-200" />
+            <span>Actual Input Data &amp; Calculation</span>
+            <span className="px-1.5 py-0.2 rounded-full bg-slate-800 text-[10px] text-cyan-300 font-mono">
+              {actualLog.length}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTfaSubView('chat')}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all ${
+              activeTfaSubView === 'chat'
+                ? 'bg-cyan-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <MessageSquare className="w-3.5 h-3.5 text-cyan-200" />
+            <span>TFA Chat &amp; Advisor</span>
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTfaSubView('split')}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all ${
+              activeTfaSubView === 'split'
+                ? 'bg-cyan-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Layers className="w-3.5 h-3.5 text-cyan-200" />
+            <span>Split View</span>
+          </button>
+        </div>
+
+        {/* Real-time Calculation Statistics Preview Pill */}
+        <div className="flex items-center gap-3">
+          <div className="hidden sm:flex items-center gap-3 text-xs font-mono">
+            <span className="text-slate-400">
+              MAE: <strong className="text-cyan-300">{isMetric ? Math.round(lbfToKn(fitStats.maeLbf)) + ' kN' : Math.round(fitStats.maeLbf).toLocaleString() + ' lbf'}</strong>
+            </span>
+            <span className="text-slate-600">&bull;</span>
+            <span className="text-slate-400">
+              R&sup2;: <strong className="text-emerald-300">{(fitStats.rSquared * 100).toFixed(0)}%</strong>
+            </span>
+            <span className="text-slate-600">&bull;</span>
+            <span className="text-slate-400">
+              Optimal &mu;: <strong className="text-amber-300">{fitStats.calibratedFriction.toFixed(2)}</strong>
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => handleApplyCalibratedMu(fitStats.calibratedFriction)}
+            className="px-2.5 py-1 bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-700/60 rounded-lg text-xs font-medium flex items-center gap-1 transition-colors"
+            title="Auto-calibrate casing friction factor to match actual measured E-Weight data"
+          >
+            <RotateCcw className="w-3 h-3 text-cyan-400" />
+            <span>Calibrate &mu;</span>
+          </button>
+        </div>
+      </div>
+
+      {/* 2.2 View Mode: Actual Input Data & Calculations */}
+      {activeTfaSubView === 'data' && (
+        <TfaActualDataTable
+          actualLog={actualLog}
+          predictedCurve={predictedCurve}
+          fitStats={fitStats}
+          unitSystem={unitSystem}
+          ct={ct}
+          currentCasingMu={config.frictionCasing}
+          onAddPoint={handleAddPoint}
+          onDeletePoint={handleDeletePoint}
+          onClearAll={handleClearAll}
+          onLoadPreset={handleLoadPreset}
+          onApplyCalibratedMu={handleApplyCalibratedMu}
+          onOpenImportModal={() => setShowImportModal(true)}
+          onSelectPoint={(p) => {
+            setSelectedPoint(p);
+            setHoverPos({ depthM: p.depthM, weightLbf: p.eWeightLbf || 0 });
+            setActiveTfaSubView('chart');
+          }}
+        />
+      )}
+
+      {/* 2.3 View Mode: TFA Engineering Advisor Chat */}
+      {activeTfaSubView === 'chat' && (
+        <TfaEngineeringAdvisorChat
+          ct={ct}
+          config={config}
+          actualLog={actualLog}
+          predictedCurve={predictedCurve}
+          fitStats={fitStats}
+          unitSystem={unitSystem}
+          onApplyCalibratedMu={handleApplyCalibratedMu}
+        />
+      )}
+
+      {/* 3. Primary SVG TFA Chart Canvas (Rendered when active view is 'chart' or 'split') */}
+      {(activeTfaSubView === 'chart' || activeTfaSubView === 'split') && (
+      <>
       <div
         className="rounded-2xl border shadow-2xl p-4 transition-all"
         style={{
@@ -815,6 +1131,54 @@ export const TfaPredictedVsActualChart: React.FC<TfaPredictedVsActualChartProps>
                 strokeLinejoin="round"
               />
             )}
+
+            {/* Interactive Data Point Markers */}
+            {visibleLog.map((pt, i) => {
+              if (pt.eWeightLbf === undefined) return null;
+              const isKey = pt.operation !== 'RIH' || i % 4 === 0 || i === visibleLog.length - 1;
+              if (!isKey) return null;
+
+              const cx = scaleX(pt.depthM);
+              const cy = scaleY(pt.eWeightLbf);
+              const isSelected = selectedPoint && Math.abs(selectedPoint.depthM - pt.depthM) < 2;
+
+              let dotFill = '#0284c7'; // blue for RIH
+              if (pt.operation === 'POH') dotFill = '#dc2626'; // red
+              else if (pt.operation === 'WIPER') dotFill = '#f59e0b'; // amber
+              else if (pt.operation === 'TAG_BOTTOM') dotFill = '#a855f7'; // purple
+              else if (pt.operation === 'STATIC') dotFill = '#94a3b8';
+
+              return (
+                <g key={pt.id || `pt-dot-${i}`} className="cursor-pointer">
+                  <circle
+                    cx={cx}
+                    cy={cy}
+                    r={isSelected ? 6 : 3}
+                    fill={dotFill}
+                    stroke={isDark ? '#ffffff' : '#000000'}
+                    strokeWidth={isSelected ? 2 : 0.8}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedPoint(pt);
+                      setHoverPos({ depthM: pt.depthM, weightLbf: pt.eWeightLbf! });
+                    }}
+                  >
+                    <title>{`Depth: ${Math.round(isMetric ? pt.depthM : pt.depthFt)} ${isMetric ? 'm' : 'ft'} | E-Weight: ${Math.round(pt.eWeightLbf)} lbf | Op: ${pt.operation || 'RIH'}`}</title>
+                  </circle>
+                  {isSelected && (
+                    <circle
+                      cx={cx}
+                      cy={cy}
+                      r={10}
+                      fill="none"
+                      stroke="#38bdf8"
+                      strokeWidth="1.5"
+                      strokeDasharray="2,2"
+                    />
+                  )}
+                </g>
+              );
+            })}
 
             {/* Interactive Crosshair (+) as shown in the photo near (1000m, 20000lbf) */}
             {isHovering && hoverPos && (
@@ -1017,6 +1381,329 @@ export const TfaPredictedVsActualChart: React.FC<TfaPredictedVsActualChartProps>
           <div className="text-[10px] text-slate-500">Injector acquisition depth</div>
         </div>
       </div>
+      </>
+      )}
+
+      {/* When in Split View, show TfaActualDataTable underneath the chart */}
+      {activeTfaSubView === 'split' && (
+        <div className="mt-4">
+          <TfaActualDataTable
+            actualLog={actualLog}
+            predictedCurve={predictedCurve}
+            fitStats={fitStats}
+            unitSystem={unitSystem}
+            ct={ct}
+            currentCasingMu={config.frictionCasing}
+            onAddPoint={handleAddPoint}
+            onDeletePoint={handleDeletePoint}
+            onClearAll={handleClearAll}
+            onLoadPreset={handleLoadPreset}
+            onApplyCalibratedMu={handleApplyCalibratedMu}
+            onOpenImportModal={() => setShowImportModal(true)}
+            onSelectPoint={(p) => {
+              setSelectedPoint(p);
+              setHoverPos({ depthM: p.depthM, weightLbf: p.eWeightLbf || 0 });
+            }}
+          />
+        </div>
+      )}
+
+      {/* 5. New / Next Well Setup & Trajectory Configuration Modal */}
+      {showNewWellModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-2xl p-6 shadow-2xl space-y-5 my-8">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-cyan-950 text-cyan-400 border border-cyan-800">
+                  <Compass className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-white text-base">TFA New / Next Well Configuration</h3>
+                  <p className="text-xs text-slate-400">
+                    Input well trajectory, target depth, pad, and simulation model parameters
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowNewWellModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg bg-slate-800 hover:bg-slate-750 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleApplyNewWell} className="space-y-4">
+              {/* Row 1: Well Identification */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-950/60 p-3.5 rounded-xl border border-slate-800">
+                <div className="space-y-1 sm:col-span-1">
+                  <label className="text-[11px] font-semibold text-slate-300 flex items-center justify-between">
+                    <span>Well Name / ID *</span>
+                    <button
+                      type="button"
+                      onClick={() => setNewWellForm((f) => ({ ...f, wellName: getNextWellId(f.wellName) }))}
+                      className="text-[10px] text-cyan-400 hover:text-cyan-200 font-mono underline"
+                      title="Auto-increment trailing number"
+                    >
+                      +Auto Next
+                    </button>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newWellForm.wellName}
+                    onChange={(e) => setNewWellForm({ ...newWellForm, wellName: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:border-cyan-500 focus:outline-none"
+                    placeholder="e.g. MRJN-765"
+                  />
+                </div>
+
+                <div className="space-y-1 sm:col-span-1">
+                  <label className="text-[11px] font-semibold text-slate-300">Operator / Client</label>
+                  <input
+                    type="text"
+                    value={newWellForm.operator}
+                    onChange={(e) => setNewWellForm({ ...newWellForm, operator: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:border-cyan-500 focus:outline-none"
+                    placeholder="e.g. Saudi Aramco"
+                  />
+                </div>
+
+                <div className="space-y-1 sm:col-span-1">
+                  <label className="text-[11px] font-semibold text-slate-300">Well Pad / Cluster</label>
+                  <input
+                    type="text"
+                    value={newWellForm.wellPad}
+                    onChange={(e) => setNewWellForm({ ...newWellForm, wellPad: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:border-cyan-500 focus:outline-none"
+                    placeholder="e.g. Pad Alpha-02"
+                  />
+                </div>
+              </div>
+
+              {/* Row 2: Well Trajectory Profile */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-200 flex items-center gap-1">
+                  <Compass className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Wellbore Trajectory Profile</span>
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {[
+                    { id: 'deviated', name: 'Deviated S-Curve', desc: 'Kickoff 500m, max 48-52°' },
+                    { id: 'vertical', name: 'Vertical Well', desc: 'Low inclination (< 3°)' },
+                    { id: 'horizontal', name: 'Horizontal / ERD', desc: 'Build to 88°+ lateral' },
+                    { id: 'deep_gas', name: 'Deep Gas HPHT', desc: 'Deep 4,500m+, high WHP' },
+                  ].map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => setNewWellForm({ ...newWellForm, wellTrajectory: t.id as any })}
+                      className={`p-2.5 rounded-xl border text-left transition-all ${
+                        newWellForm.wellTrajectory === t.id
+                          ? 'bg-cyan-950/90 border-cyan-500 text-white shadow-sm ring-1 ring-cyan-500'
+                          : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="text-xs font-semibold text-white">{t.name}</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">{t.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Row 3: Well Depths & Geometries */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-950/60 p-3.5 rounded-xl border border-slate-800">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-300">
+                    Target Depth MD ({isMetric ? 'm' : 'ft'}) *
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    min="100"
+                    max="10000"
+                    step="10"
+                    value={isMetric ? newWellForm.targetDepthM : Math.round(mToFt(newWellForm.targetDepthM))}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value) || 2500;
+                      setNewWellForm({
+                        ...newWellForm,
+                        targetDepthM: isMetric ? val : ftToM(val),
+                      });
+                    }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:border-cyan-500 focus:outline-none"
+                  />
+                  <span className="text-[10px] text-slate-500 block">
+                    ~{Math.round(isMetric ? mToFt(newWellForm.targetDepthM) : newWellForm.targetDepthM).toLocaleString()} {isMetric ? 'ft' : 'm'} equivalent
+                  </span>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-300">
+                    Kickoff Depth KOP ({isMetric ? 'm' : 'ft'})
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="8000"
+                    step="10"
+                    value={isMetric ? newWellForm.kickoffDepthM : Math.round(mToFt(newWellForm.kickoffDepthM))}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value) || 500;
+                      setNewWellForm({
+                        ...newWellForm,
+                        kickoffDepthM: isMetric ? val : ftToM(val),
+                      });
+                    }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:border-cyan-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-300">Max Inclination (&deg;)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="95"
+                    step="1"
+                    value={newWellForm.maxInclinationDeg}
+                    onChange={(e) => setNewWellForm({ ...newWellForm, maxInclinationDeg: parseFloat(e.target.value) || 0 })}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:border-cyan-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Row 4: Pressure, Fluid, and Friction */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-950/60 p-3.5 rounded-xl border border-slate-800">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-300">Wellhead WHP (psi)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="15000"
+                    step="50"
+                    value={newWellForm.whpPsi}
+                    onChange={(e) => setNewWellForm({ ...newWellForm, whpPsi: parseFloat(e.target.value) || 0 })}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:border-cyan-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-300">Fluid Density (ppg)</label>
+                  <input
+                    type="number"
+                    min="6.0"
+                    max="18.0"
+                    step="0.1"
+                    value={newWellForm.fluidDensityPpg}
+                    onChange={(e) => setNewWellForm({ ...newWellForm, fluidDensityPpg: parseFloat(e.target.value) || 8.4 })}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:border-cyan-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-300">Casing Friction (&mu;)</label>
+                  <input
+                    type="number"
+                    min="0.10"
+                    max="0.50"
+                    step="0.01"
+                    value={newWellForm.frictionCasing}
+                    onChange={(e) => setNewWellForm({ ...newWellForm, frictionCasing: parseFloat(e.target.value) || 0.24 })}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:border-cyan-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-300">Weight Tare Offset (lbf)</label>
+                  <input
+                    type="number"
+                    step="10"
+                    value={newWellForm.weightOffsetLbf}
+                    onChange={(e) => setNewWellForm({ ...newWellForm, weightOffsetLbf: parseFloat(e.target.value) || 0 })}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:border-cyan-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Row 5: Initial Run Log Generation Option */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-300">Initial Run Log Data Option</label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setNewWellForm({ ...newWellForm, initLogMode: 'sample' })}
+                    className={`p-2.5 rounded-xl border text-left transition-all ${
+                      newWellForm.initLogMode === 'sample'
+                        ? 'bg-cyan-950/80 border-cyan-500 text-white'
+                        : 'bg-slate-950/50 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <div className="text-xs font-medium text-white">Synthetic Sample Run</div>
+                    <div className="text-[10px] text-slate-400 mt-0.5">Realistic pick-up checks &amp; bottom tag</div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setNewWellForm({ ...newWellForm, initLogMode: 'blank' })}
+                    className={`p-2.5 rounded-xl border text-left transition-all ${
+                      newWellForm.initLogMode === 'blank'
+                        ? 'bg-cyan-950/80 border-cyan-500 text-white'
+                        : 'bg-slate-950/50 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <div className="text-xs font-medium text-white">Blank Log (Tare Zero)</div>
+                    <div className="text-[10px] text-slate-400 mt-0.5">Ready for live field acquisition / paste</div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setNewWellForm({ ...newWellForm, initLogMode: 'offset' })}
+                    className={`p-2.5 rounded-xl border text-left transition-all ${
+                      newWellForm.initLogMode === 'offset'
+                        ? 'bg-cyan-950/80 border-cyan-500 text-white'
+                        : 'bg-slate-950/50 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <div className="text-xs font-medium text-white">High Drag Offset (+1.2k lbf)</div>
+                    <div className="text-[10px] text-slate-400 mt-0.5">Calibrate against tight hole friction</div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Modal Footer Actions */}
+              <div className="flex items-center justify-between pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={handleQuickNextWell}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-800/60 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors"
+                >
+                  <ArrowRight className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Quick Advance: Next Well ({nextWellSuggestion})</span>
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowNewWellModal(false)}
+                    className="px-4 py-2 bg-slate-800 text-slate-300 hover:text-white rounded-lg text-xs font-medium transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 shadow-lg shadow-cyan-900/30"
+                  >
+                    <Check className="w-3.5 h-3.5 text-white" />
+                    <span>Create &amp; Load Well</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* 6. Paste / Import Actual E-Weight Modal */}
       {showImportModal && (

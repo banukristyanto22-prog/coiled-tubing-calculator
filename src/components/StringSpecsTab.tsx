@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { CoiledTubingString, UnitSystem, TubingGrade } from '../types/coiledTubing';
 import { 
   calculateGeometry, 
@@ -11,8 +11,18 @@ import {
   mpaToPsi,
   lbfToKn
 } from '../utils/engineeringCalculations';
+import { 
+  validateOuterDiameter,
+  validateWallThickness,
+  validateStringLength,
+  validateYieldStrength,
+  validateOvality
+} from '../utils/geometryValidation';
+import { useToast } from '../context/ToastContext';
+import { GeometryValidationResult } from '../types/toast';
 import { EngineeringTooltip } from './EngineeringTooltip';
 import { UsedConditionPanel } from './UsedConditionPanel';
+import { StringBhaSection } from './StringBhaSection';
 import { 
   Ruler, 
   Scale, 
@@ -20,21 +30,55 @@ import {
   Layers, 
   ShieldAlert, 
   CheckCircle,
+  CheckCircle2,
   FileSpreadsheet,
-  Edit3
+  Edit3,
+  AlertOctagon,
+  AlertTriangle,
+  Wrench,
+  RotateCcw,
+  Sparkles,
+  Info
 } from 'lucide-react';
 
 interface StringSpecsTabProps {
   ct: CoiledTubingString;
   onChangeString: (updated: CoiledTubingString) => void;
   unitSystem: UnitSystem;
+  onNavigateToForces?: () => void;
 }
 
 export const StringSpecsTab: React.FC<StringSpecsTabProps> = ({
   ct,
   onChangeString,
   unitSystem,
+  onNavigateToForces,
 }) => {
+  const { showInvalidInputWarning, addToast } = useToast();
+  const [fieldErrors, setFieldErrors] = useState<Record<string, GeometryValidationResult>>({});
+  
+  const isMetric = unitSystem === 'metric';
+
+  // Local string state for inputs so typing isn't interrupted
+  const [localInputs, setLocalInputs] = useState({
+    outerDiameterIn: isMetric ? Number(inToMm(ct.outerDiameterIn).toFixed(2)).toString() : ct.outerDiameterIn.toString(),
+    wallThicknessIn: isMetric ? Number(inToMm(ct.wallThicknessIn).toFixed(2)).toString() : ct.wallThicknessIn.toString(),
+    totalLengthFt: (isMetric ? Math.round(ftToM(ct.totalLengthFt)) : ct.totalLengthFt).toString(),
+    yieldStrengthPsi: (isMetric ? Math.round(psiToMpa(ct.yieldStrengthPsi)) : ct.yieldStrengthPsi).toString(),
+    ovalityPercent: ct.ovalityPercent.toString(),
+  });
+
+  // Synchronize local inputs whenever external ct or unitSystem changes
+  useEffect(() => {
+    setLocalInputs({
+      outerDiameterIn: isMetric ? Number(inToMm(ct.outerDiameterIn).toFixed(2)).toString() : ct.outerDiameterIn.toString(),
+      wallThicknessIn: isMetric ? Number(inToMm(ct.wallThicknessIn).toFixed(2)).toString() : ct.wallThicknessIn.toString(),
+      totalLengthFt: (isMetric ? Math.round(ftToM(ct.totalLengthFt)) : ct.totalLengthFt).toString(),
+      yieldStrengthPsi: (isMetric ? Math.round(psiToMpa(ct.yieldStrengthPsi)) : ct.yieldStrengthPsi).toString(),
+      ovalityPercent: ct.ovalityPercent.toString(),
+    });
+  }, [ct.outerDiameterIn, ct.wallThicknessIn, ct.totalLengthFt, ct.yieldStrengthPsi, ct.ovalityPercent, isMetric]);
+
   const geom = calculateGeometry(ct);
   const capacities = calculateCapacities(ct);
 
@@ -45,7 +89,163 @@ export const StringSpecsTab: React.FC<StringSpecsTabProps> = ({
     });
   };
 
-  const isMetric = unitSystem === 'metric';
+  const handleAutoFix = (field: keyof CoiledTubingString, recommendedVal: number, paramName: string) => {
+    onChangeString({
+      ...ct,
+      [field]: recommendedVal,
+    });
+    setFieldErrors((prev) => {
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+    addToast({
+      title: 'Safe Engineering Range Restored',
+      message: `${paramName} reset to safe certified value: ${isMetric && (field === 'outerDiameterIn' || field === 'wallThicknessIn') ? inToMm(recommendedVal).toFixed(2) + ' mm' : recommendedVal + (field === 'outerDiameterIn' || field === 'wallThicknessIn' ? '"' : '')}.`,
+      severity: 'success',
+      autoDismissMs: 4000,
+    });
+  };
+
+  const handleDiameterChange = (rawVal: string) => {
+    setLocalInputs((prev) => ({ ...prev, outerDiameterIn: rawVal }));
+    const parsed = parseFloat(rawVal);
+    
+    if (isNaN(parsed)) return;
+
+    const odIn = isMetric ? mmToIn(parsed) : parsed;
+    const validation = validateOuterDiameter(odIn, ct.wallThicknessIn, unitSystem);
+
+    if (!validation.isValid) {
+      setFieldErrors((prev) => ({ ...prev, outerDiameterIn: validation }));
+      showInvalidInputWarning(validation, () => {
+        handleAutoFix('outerDiameterIn', validation.recommendedValue ?? 2.000, 'Outer Diameter');
+      });
+      // Guard calculations: only persist if positive and non-collapsing
+      if (odIn > 0 && odIn > 2 * ct.wallThicknessIn) {
+        handleUpdate('outerDiameterIn', odIn);
+      }
+    } else {
+      setFieldErrors((prev) => {
+        const next = { ...prev };
+        delete next.outerDiameterIn;
+        if (next.wallThicknessIn?.title?.includes('Excessive Wall Thickness') || next.wallThicknessIn?.title?.includes('Bore Collapse')) {
+          const wtVal = validateWallThickness(ct.wallThicknessIn, odIn, unitSystem);
+          if (wtVal.isValid) delete next.wallThicknessIn;
+        }
+        return next;
+      });
+      handleUpdate('outerDiameterIn', odIn);
+    }
+  };
+
+  const handleWallThicknessChange = (rawVal: string) => {
+    setLocalInputs((prev) => ({ ...prev, wallThicknessIn: rawVal }));
+    const parsed = parseFloat(rawVal);
+
+    if (isNaN(parsed)) return;
+
+    const wtIn = isMetric ? mmToIn(parsed) : parsed;
+    const validation = validateWallThickness(wtIn, ct.outerDiameterIn, unitSystem);
+
+    if (!validation.isValid) {
+      setFieldErrors((prev) => ({ ...prev, wallThicknessIn: validation }));
+      showInvalidInputWarning(validation, () => {
+        handleAutoFix('wallThicknessIn', validation.recommendedValue ?? 0.156, 'Wall Thickness');
+      });
+      // Guard calculations: only persist if positive and non-collapsing
+      if (wtIn > 0 && 2 * wtIn < ct.outerDiameterIn) {
+        handleUpdate('wallThicknessIn', wtIn);
+      }
+    } else {
+      setFieldErrors((prev) => {
+        const next = { ...prev };
+        delete next.wallThicknessIn;
+        return next;
+      });
+      handleUpdate('wallThicknessIn', wtIn);
+    }
+  };
+
+  const handleLengthChange = (rawVal: string) => {
+    setLocalInputs((prev) => ({ ...prev, totalLengthFt: rawVal }));
+    const parsed = parseFloat(rawVal);
+
+    if (isNaN(parsed)) return;
+
+    const lenFt = isMetric ? mToFt(parsed) : parsed;
+    const validation = validateStringLength(lenFt, unitSystem);
+
+    if (!validation.isValid) {
+      setFieldErrors((prev) => ({ ...prev, totalLengthFt: validation }));
+      showInvalidInputWarning(validation, () => {
+        handleAutoFix('totalLengthFt', validation.recommendedValue ?? 18000, 'String Length');
+      });
+      if (lenFt > 0) {
+        handleUpdate('totalLengthFt', lenFt);
+      }
+    } else {
+      setFieldErrors((prev) => {
+        const next = { ...prev };
+        delete next.totalLengthFt;
+        return next;
+      });
+      handleUpdate('totalLengthFt', lenFt);
+    }
+  };
+
+  const handleYieldChange = (rawVal: string) => {
+    setLocalInputs((prev) => ({ ...prev, yieldStrengthPsi: rawVal }));
+    const parsed = parseFloat(rawVal);
+
+    if (isNaN(parsed)) return;
+
+    const ysPsi = isMetric ? mpaToPsi(parsed) : parsed;
+    const validation = validateYieldStrength(ysPsi, unitSystem);
+
+    if (!validation.isValid) {
+      setFieldErrors((prev) => ({ ...prev, yieldStrengthPsi: validation }));
+      showInvalidInputWarning(validation, () => {
+        handleAutoFix('yieldStrengthPsi', validation.recommendedValue ?? 90000, 'Yield Strength');
+      });
+      if (ysPsi > 0) {
+        handleUpdate('yieldStrengthPsi', ysPsi);
+      }
+    } else {
+      setFieldErrors((prev) => {
+        const next = { ...prev };
+        delete next.yieldStrengthPsi;
+        return next;
+      });
+      handleUpdate('yieldStrengthPsi', ysPsi);
+    }
+  };
+
+  const handleOvalityChange = (rawVal: string) => {
+    setLocalInputs((prev) => ({ ...prev, ovalityPercent: rawVal }));
+    const parsed = parseFloat(rawVal);
+
+    if (isNaN(parsed)) return;
+
+    const validation = validateOvality(parsed);
+
+    if (!validation.isValid) {
+      setFieldErrors((prev) => ({ ...prev, ovalityPercent: validation }));
+      showInvalidInputWarning(validation, () => {
+        handleAutoFix('ovalityPercent', validation.recommendedValue ?? 2.0, 'Ovality Tolerance');
+      });
+      if (parsed >= 0) {
+        handleUpdate('ovalityPercent', parsed);
+      }
+    } else {
+      setFieldErrors((prev) => {
+        const next = { ...prev };
+        delete next.ovalityPercent;
+        return next;
+      });
+      handleUpdate('ovalityPercent', parsed);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -65,12 +265,80 @@ export const StringSpecsTab: React.FC<StringSpecsTabProps> = ({
             </span>
           </div>
 
+          {/* Test Safe Range Violations Quick-Trigger Banner */}
+          <div className="mb-4 p-2.5 bg-slate-950/80 border border-slate-800 rounded-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+              <span className="text-xs font-semibold text-slate-300">
+                Safe Engineering Range Diagnostics:
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <button
+                type="button"
+                onClick={() => handleDiameterChange(isMetric ? '-50.8' : '-2.000')}
+                className="px-2.5 py-1 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 rounded text-[11px] font-mono transition-colors flex items-center gap-1 cursor-pointer"
+                title="Trigger Negative Diameter Toast"
+              >
+                <AlertOctagon className="w-3 h-3 text-rose-400" />
+                Negative OD (-2.000")
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleWallThicknessChange(isMetric ? '31.75' : '1.250')}
+                className="px-2.5 py-1 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 rounded text-[11px] font-mono transition-colors flex items-center gap-1 cursor-pointer"
+                title="Trigger Excessive Wall Thickness (2t >= OD) Toast"
+              >
+                <AlertTriangle className="w-3 h-3 text-amber-400" />
+                Excessive Wall (1.250")
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleWallThicknessChange(isMetric ? '-3.96' : '-0.156')}
+                className="px-2.5 py-1 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 rounded text-[11px] font-mono transition-colors flex items-center gap-1 cursor-pointer"
+                title="Trigger Negative Wall Thickness Toast"
+              >
+                <AlertOctagon className="w-3 h-3 text-rose-400" />
+                Negative Wall (-0.156")
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  onChangeString({
+                    ...ct,
+                    outerDiameterIn: 2.000,
+                    wallThicknessIn: 0.156,
+                    totalLengthFt: 18000,
+                    yieldStrengthPsi: 97500,
+                    ovalityPercent: 1.0,
+                  });
+                  setFieldErrors({});
+                  addToast({
+                    title: 'Certified Baseline Restored',
+                    message: 'String geometry restored to certified Shinda CT90 specs (2.000" OD × 0.156" WT).',
+                    severity: 'success',
+                    autoDismissMs: 3500,
+                  });
+                }}
+                className="px-2.5 py-1 bg-cyan-950/80 hover:bg-cyan-900/90 border border-cyan-700/60 text-cyan-300 rounded text-[11px] font-mono transition-colors flex items-center gap-1 cursor-pointer"
+                title="Restore Standard Certified Geometry"
+              >
+                <RotateCcw className="w-3 h-3 text-cyan-400" />
+                Reset Safe
+              </button>
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-xs">
             {/* Outer Diameter */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-slate-400">
-                  Outer Diameter (OD) {isMetric ? '(mm)' : '(in)'}
+                <label className={`text-slate-400 flex items-center gap-1 ${fieldErrors.outerDiameterIn ? 'text-rose-400 font-semibold' : ''}`}>
+                  <span>Outer Diameter (OD) {isMetric ? '(mm)' : '(in)'}</span>
+                  {fieldErrors.outerDiameterIn && <AlertOctagon className="w-3.5 h-3.5 text-rose-400 animate-pulse" />}
                 </label>
                 <EngineeringTooltip
                   parameter="Outer Diameter"
@@ -82,23 +350,47 @@ export const StringSpecsTab: React.FC<StringSpecsTabProps> = ({
                   industryStandard="API Spec 5ST Table 1"
                 />
               </div>
-              <input
-                type="number"
-                step="0.001"
-                value={isMetric ? Number(inToMm(ct.outerDiameterIn).toFixed(2)) : ct.outerDiameterIn}
-                onChange={(e) => {
-                  const val = parseFloat(e.target.value) || 0;
-                  handleUpdate('outerDiameterIn', isMetric ? mmToIn(val) : val);
-                }}
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono focus:border-cyan-500 focus:outline-none"
-              />
+              <div className="relative">
+                <input
+                  type="number"
+                  step="0.001"
+                  value={localInputs.outerDiameterIn}
+                  onChange={(e) => handleDiameterChange(e.target.value)}
+                  className={`w-full bg-slate-950 border ${
+                    fieldErrors.outerDiameterIn
+                      ? 'border-rose-500 ring-2 ring-rose-500/30 text-rose-200 bg-rose-950/20'
+                      : 'border-slate-700 text-white focus:border-cyan-500'
+                  } rounded-lg px-3 py-2 font-mono focus:outline-none transition-all`}
+                />
+              </div>
+              {fieldErrors.outerDiameterIn && (
+                <div className="mt-1.5 p-2 rounded-lg bg-rose-950/40 border border-rose-500/40 text-[11px] text-rose-300 flex items-start justify-between gap-1.5">
+                  <div className="flex-1 min-w-0">
+                    <span className="font-semibold block">{fieldErrors.outerDiameterIn.title}</span>
+                    <span className="text-[10px] text-slate-300 block mt-0.5">
+                      Safe: {fieldErrors.outerDiameterIn.safeRangeDisplay}
+                    </span>
+                  </div>
+                  {fieldErrors.outerDiameterIn.recommendedValue !== undefined && (
+                    <button
+                      type="button"
+                      onClick={() => handleAutoFix('outerDiameterIn', fieldErrors.outerDiameterIn.recommendedValue!, 'Outer Diameter')}
+                      className="px-2 py-1 rounded bg-rose-500/30 hover:bg-rose-500/40 text-rose-200 border border-rose-500/50 text-[10px] font-semibold whitespace-nowrap transition-colors flex items-center gap-1 cursor-pointer shrink-0"
+                    >
+                      <Wrench className="w-2.5 h-2.5" />
+                      Auto-Fix
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Wall Thickness */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-slate-400">
-                  Wall Thickness (t) {isMetric ? '(mm)' : '(in)'}
+                <label className={`text-slate-400 flex items-center gap-1 ${fieldErrors.wallThicknessIn ? 'text-rose-400 font-semibold' : ''}`}>
+                  <span>Wall Thickness (t) {isMetric ? '(mm)' : '(in)'}</span>
+                  {fieldErrors.wallThicknessIn && <AlertTriangle className="w-3.5 h-3.5 text-rose-400 animate-pulse" />}
                 </label>
                 <EngineeringTooltip
                   parameter="Wall Thickness"
@@ -110,16 +402,39 @@ export const StringSpecsTab: React.FC<StringSpecsTabProps> = ({
                   industryStandard="API Spec 5ST §6.3"
                 />
               </div>
-              <input
-                type="number"
-                step="0.001"
-                value={isMetric ? Number(inToMm(ct.wallThicknessIn).toFixed(2)) : ct.wallThicknessIn}
-                onChange={(e) => {
-                  const val = parseFloat(e.target.value) || 0;
-                  handleUpdate('wallThicknessIn', isMetric ? mmToIn(val) : val);
-                }}
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono focus:border-cyan-500 focus:outline-none"
-              />
+              <div className="relative">
+                <input
+                  type="number"
+                  step="0.001"
+                  value={localInputs.wallThicknessIn}
+                  onChange={(e) => handleWallThicknessChange(e.target.value)}
+                  className={`w-full bg-slate-950 border ${
+                    fieldErrors.wallThicknessIn
+                      ? 'border-rose-500 ring-2 ring-rose-500/30 text-rose-200 bg-rose-950/20'
+                      : 'border-slate-700 text-white focus:border-cyan-500'
+                  } rounded-lg px-3 py-2 font-mono focus:outline-none transition-all`}
+                />
+              </div>
+              {fieldErrors.wallThicknessIn && (
+                <div className="mt-1.5 p-2 rounded-lg bg-rose-950/40 border border-rose-500/40 text-[11px] text-rose-300 flex items-start justify-between gap-1.5">
+                  <div className="flex-1 min-w-0">
+                    <span className="font-semibold block">{fieldErrors.wallThicknessIn.title}</span>
+                    <span className="text-[10px] text-slate-300 block mt-0.5">
+                      Safe: {fieldErrors.wallThicknessIn.safeRangeDisplay}
+                    </span>
+                  </div>
+                  {fieldErrors.wallThicknessIn.recommendedValue !== undefined && (
+                    <button
+                      type="button"
+                      onClick={() => handleAutoFix('wallThicknessIn', fieldErrors.wallThicknessIn.recommendedValue!, 'Wall Thickness')}
+                      className="px-2 py-1 rounded bg-rose-500/30 hover:bg-rose-500/40 text-rose-200 border border-rose-500/50 text-[10px] font-semibold whitespace-nowrap transition-colors flex items-center gap-1 cursor-pointer shrink-0"
+                    >
+                      <Wrench className="w-2.5 h-2.5" />
+                      Auto-Fix
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Grade Selector */}
@@ -144,6 +459,7 @@ export const StringSpecsTab: React.FC<StringSpecsTabProps> = ({
                   if (newGrade === 'CT70') defYield = 70000;
                   if (newGrade === 'CT80') defYield = 80000;
                   if (newGrade === 'CT90') defYield = 97500;
+                  if (newGrade === 'HS-90') defYield = 90000;
                   if (newGrade === 'CT100') defYield = 100000;
                   if (newGrade === 'CT110') defYield = 110000;
                   onChangeString({
@@ -158,6 +474,7 @@ export const StringSpecsTab: React.FC<StringSpecsTabProps> = ({
                 <option value="CT70">CT70 (70,000 psi)</option>
                 <option value="CT80">CT80 (80,000 psi)</option>
                 <option value="CT90">CT90 (90,000 / 97,500 psi)</option>
+                <option value="HS-90">HS-90 (90,000 psi - Cerberus / COSL Spec)</option>
                 <option value="CT100">CT100 (100,000 psi)</option>
                 <option value="CT110">CT110 (110,000 psi)</option>
               </select>
@@ -166,8 +483,9 @@ export const StringSpecsTab: React.FC<StringSpecsTabProps> = ({
             {/* Total String Length */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-slate-400">
-                  Total String Length {isMetric ? '(m)' : '(ft)'}
+                <label className={`text-slate-400 flex items-center gap-1 ${fieldErrors.totalLengthFt ? 'text-rose-400 font-semibold' : ''}`}>
+                  <span>Total String Length {isMetric ? '(m)' : '(ft)'}</span>
+                  {fieldErrors.totalLengthFt && <AlertOctagon className="w-3.5 h-3.5 text-rose-400 animate-pulse" />}
                 </label>
                 <EngineeringTooltip
                   parameter="Continuous String Length"
@@ -179,23 +497,47 @@ export const StringSpecsTab: React.FC<StringSpecsTabProps> = ({
                   industryStandard="ICoTA Recommended Practices"
                 />
               </div>
-              <input
-                type="number"
-                step="10"
-                value={isMetric ? Math.round(ftToM(ct.totalLengthFt)) : ct.totalLengthFt}
-                onChange={(e) => {
-                  const val = parseFloat(e.target.value) || 0;
-                  handleUpdate('totalLengthFt', isMetric ? mToFt(val) : val);
-                }}
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono focus:border-cyan-500 focus:outline-none"
-              />
+              <div className="relative">
+                <input
+                  type="number"
+                  step="10"
+                  value={localInputs.totalLengthFt}
+                  onChange={(e) => handleLengthChange(e.target.value)}
+                  className={`w-full bg-slate-950 border ${
+                    fieldErrors.totalLengthFt
+                      ? 'border-rose-500 ring-2 ring-rose-500/30 text-rose-200 bg-rose-950/20'
+                      : 'border-slate-700 text-white focus:border-cyan-500'
+                  } rounded-lg px-3 py-2 font-mono focus:outline-none transition-all`}
+                />
+              </div>
+              {fieldErrors.totalLengthFt && (
+                <div className="mt-1.5 p-2 rounded-lg bg-rose-950/40 border border-rose-500/40 text-[11px] text-rose-300 flex items-start justify-between gap-1.5">
+                  <div className="flex-1 min-w-0">
+                    <span className="font-semibold block">{fieldErrors.totalLengthFt.title}</span>
+                    <span className="text-[10px] text-slate-300 block mt-0.5">
+                      Safe: {fieldErrors.totalLengthFt.safeRangeDisplay}
+                    </span>
+                  </div>
+                  {fieldErrors.totalLengthFt.recommendedValue !== undefined && (
+                    <button
+                      type="button"
+                      onClick={() => handleAutoFix('totalLengthFt', fieldErrors.totalLengthFt.recommendedValue!, 'String Length')}
+                      className="px-2 py-1 rounded bg-rose-500/30 hover:bg-rose-500/40 text-rose-200 border border-rose-500/50 text-[10px] font-semibold whitespace-nowrap transition-colors flex items-center gap-1 cursor-pointer shrink-0"
+                    >
+                      <Wrench className="w-2.5 h-2.5" />
+                      Auto-Fix
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Yield Strength */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-slate-400">
-                  Yield Strength (Rp0.2) {isMetric ? '(MPa)' : '(psi)'}
+                <label className={`text-slate-400 flex items-center gap-1 ${fieldErrors.yieldStrengthPsi ? 'text-rose-400 font-semibold' : ''}`}>
+                  <span>Yield Strength (Rp0.2) {isMetric ? '(MPa)' : '(psi)'}</span>
+                  {fieldErrors.yieldStrengthPsi && <AlertOctagon className="w-3.5 h-3.5 text-rose-400 animate-pulse" />}
                 </label>
                 <EngineeringTooltip
                   parameter="Yield Strength (Rp0.2 / SMYS)"
@@ -207,22 +549,48 @@ export const StringSpecsTab: React.FC<StringSpecsTabProps> = ({
                   industryStandard="ASTM A370 / API Spec 5ST §7.1"
                 />
               </div>
-              <input
-                type="number"
-                step="100"
-                value={isMetric ? Math.round(psiToMpa(ct.yieldStrengthPsi)) : ct.yieldStrengthPsi}
-                onChange={(e) => {
-                  const val = parseFloat(e.target.value) || 0;
-                  handleUpdate('yieldStrengthPsi', isMetric ? mpaToPsi(val) : val);
-                }}
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono focus:border-cyan-500 focus:outline-none"
-              />
+              <div className="relative">
+                <input
+                  type="number"
+                  step="100"
+                  value={localInputs.yieldStrengthPsi}
+                  onChange={(e) => handleYieldChange(e.target.value)}
+                  className={`w-full bg-slate-950 border ${
+                    fieldErrors.yieldStrengthPsi
+                      ? 'border-rose-500 ring-2 ring-rose-500/30 text-rose-200 bg-rose-950/20'
+                      : 'border-slate-700 text-white focus:border-cyan-500'
+                  } rounded-lg px-3 py-2 font-mono focus:outline-none transition-all`}
+                />
+              </div>
+              {fieldErrors.yieldStrengthPsi && (
+                <div className="mt-1.5 p-2 rounded-lg bg-rose-950/40 border border-rose-500/40 text-[11px] text-rose-300 flex items-start justify-between gap-1.5">
+                  <div className="flex-1 min-w-0">
+                    <span className="font-semibold block">{fieldErrors.yieldStrengthPsi.title}</span>
+                    <span className="text-[10px] text-slate-300 block mt-0.5">
+                      Safe: {fieldErrors.yieldStrengthPsi.safeRangeDisplay}
+                    </span>
+                  </div>
+                  {fieldErrors.yieldStrengthPsi.recommendedValue !== undefined && (
+                    <button
+                      type="button"
+                      onClick={() => handleAutoFix('yieldStrengthPsi', fieldErrors.yieldStrengthPsi.recommendedValue!, 'Yield Strength')}
+                      className="px-2 py-1 rounded bg-rose-500/30 hover:bg-rose-500/40 text-rose-200 border border-rose-500/50 text-[10px] font-semibold whitespace-nowrap transition-colors flex items-center gap-1 cursor-pointer shrink-0"
+                    >
+                      <Wrench className="w-2.5 h-2.5" />
+                      Auto-Fix
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Ovality % */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-slate-400">Ovality Tolerance (%)</label>
+                <label className={`text-slate-400 flex items-center gap-1 ${fieldErrors.ovalityPercent ? 'text-rose-400 font-semibold' : ''}`}>
+                  <span>Ovality Tolerance (%)</span>
+                  {fieldErrors.ovalityPercent && <AlertOctagon className="w-3.5 h-3.5 text-rose-400 animate-pulse" />}
+                </label>
                 <EngineeringTooltip
                   parameter="Cross-Sectional Ovality"
                   symbol="Ovality %"
@@ -233,13 +601,39 @@ export const StringSpecsTab: React.FC<StringSpecsTabProps> = ({
                   industryStandard="API Spec 5ST §6.4 & API RP 5C7"
                 />
               </div>
-              <input
-                type="number"
-                step="0.1"
-                value={ct.ovalityPercent}
-                onChange={(e) => handleUpdate('ovalityPercent', parseFloat(e.target.value) || 0)}
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono focus:border-cyan-500 focus:outline-none"
-              />
+              <div className="relative">
+                <input
+                  type="number"
+                  step="0.1"
+                  value={localInputs.ovalityPercent}
+                  onChange={(e) => handleOvalityChange(e.target.value)}
+                  className={`w-full bg-slate-950 border ${
+                    fieldErrors.ovalityPercent
+                      ? 'border-rose-500 ring-2 ring-rose-500/30 text-rose-200 bg-rose-950/20'
+                      : 'border-slate-700 text-white focus:border-cyan-500'
+                  } rounded-lg px-3 py-2 font-mono focus:outline-none transition-all`}
+                />
+              </div>
+              {fieldErrors.ovalityPercent && (
+                <div className="mt-1.5 p-2 rounded-lg bg-rose-950/40 border border-rose-500/40 text-[11px] text-rose-300 flex items-start justify-between gap-1.5">
+                  <div className="flex-1 min-w-0">
+                    <span className="font-semibold block">{fieldErrors.ovalityPercent.title}</span>
+                    <span className="text-[10px] text-slate-300 block mt-0.5">
+                      Safe: {fieldErrors.ovalityPercent.safeRangeDisplay}
+                    </span>
+                  </div>
+                  {fieldErrors.ovalityPercent.recommendedValue !== undefined && (
+                    <button
+                      type="button"
+                      onClick={() => handleAutoFix('ovalityPercent', fieldErrors.ovalityPercent.recommendedValue!, 'Ovality Tolerance')}
+                      className="px-2 py-1 rounded bg-rose-500/30 hover:bg-rose-500/40 text-rose-200 border border-rose-500/50 text-[10px] font-semibold whitespace-nowrap transition-colors flex items-center gap-1 cursor-pointer shrink-0"
+                    >
+                      <Wrench className="w-2.5 h-2.5" />
+                      Auto-Fix
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -365,6 +759,14 @@ export const StringSpecsTab: React.FC<StringSpecsTabProps> = ({
         </div>
       </div>
 
+      {/* Bottom Hole Assembly (BHA) Components Section */}
+      <StringBhaSection
+        ct={ct}
+        onChangeString={onChangeString}
+        unitSystem={unitSystem}
+        onNavigateToForces={onNavigateToForces}
+      />
+
       {/* Used / Real Situation Field Condition Degradation Panel */}
       <UsedConditionPanel
         ct={ct}
@@ -398,30 +800,67 @@ export const StringSpecsTab: React.FC<StringSpecsTabProps> = ({
               </span>
             </div>
 
-            <div className="flex items-center justify-between p-2.5 bg-slate-950/60 rounded-lg border border-slate-800/80">
-              <span className="text-slate-400">Total String Weight (Empty / Dry)</span>
-              <span className="font-mono font-bold text-white">
-                {isMetric
-                  ? `${Math.round(geom.totalWeightInAirKg).toLocaleString()} kg`
-                  : `${Math.round(geom.totalWeightInAirLbs).toLocaleString()} lbs`}
-              </span>
-            </div>
+            {geom.hasBha && geom.bhaAirWeightLbs > 0 ? (
+              <>
+                <div className="flex items-center justify-between p-2.5 bg-slate-950/60 rounded-lg border border-slate-800/80">
+                  <span className="text-slate-400">Coiled Tubing Dry Weight ({isMetric ? `${Math.round(ftToM(ct.totalLengthFt)).toLocaleString()} m` : `${ct.totalLengthFt.toLocaleString()} ft`})</span>
+                  <span className="font-mono font-bold text-slate-200">
+                    {isMetric
+                      ? `${Math.round(geom.totalWeightInAirKg).toLocaleString()} kg`
+                      : `${Math.round(geom.totalWeightInAirLbs).toLocaleString()} lbs`}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between p-2.5 bg-slate-950/60 rounded-lg border border-cyan-500/20">
+                  <span className="text-slate-400 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-cyan-400" />
+                    <span>BHA Toolstring Weight ({isMetric ? `${geom.bhaLengthM.toFixed(1)} m` : `${geom.bhaLengthFt.toFixed(1)} ft`})</span>
+                  </span>
+                  <span className="font-mono font-bold text-cyan-300">
+                    +{isMetric
+                      ? `${Math.round(geom.bhaAirWeightKg).toLocaleString()} kg`
+                      : `${Math.round(geom.bhaAirWeightLbs).toLocaleString()} lbs`}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between p-2.5 bg-slate-950/80 rounded-lg border border-amber-500/30">
+                  <div>
+                    <span className="text-amber-300 font-semibold block">Total Combined String Weight (Dry)</span>
+                    <span className="text-[10px] text-slate-400">Total Length: {isMetric ? `${geom.totalAssemblyLengthM.toFixed(1)} m` : `${geom.totalAssemblyLengthFt.toLocaleString()} ft`}</span>
+                  </div>
+                  <span className="font-mono font-bold text-white text-sm">
+                    {isMetric
+                      ? `${Math.round(geom.totalAssemblyWeightInAirKg).toLocaleString()} kg`
+                      : `${Math.round(geom.totalAssemblyWeightInAirLbs).toLocaleString()} lbs`}
+                  </span>
+                </div>
+              </>
+            ) : (
+              <div className="flex items-center justify-between p-2.5 bg-slate-950/60 rounded-lg border border-slate-800/80">
+                <span className="text-slate-400">Total String Weight (Empty / Dry)</span>
+                <span className="font-mono font-bold text-white">
+                  {isMetric
+                    ? `${Math.round(geom.totalWeightInAirKg).toLocaleString()} kg`
+                    : `${Math.round(geom.totalWeightInAirLbs).toLocaleString()} lbs`}
+                </span>
+              </div>
+            )}
 
             <div className="flex items-center justify-between p-2.5 bg-slate-950/60 rounded-lg border border-slate-800/80">
-              <span className="text-slate-400">Weight Filled with Fresh Water (8.34 ppg)</span>
+              <span className="text-slate-400">Total Assembly Filled with Water (8.34 ppg)</span>
               <span className="font-mono font-bold text-cyan-300">
                 {isMetric
-                  ? `${Math.round(geom.totalWeightInAirKg + geom.totalCapacityM3 * 1000).toLocaleString()} kg`
-                  : `${Math.round(geom.totalWeightInAirLbs + geom.totalCapacityBbl * 42 * 8.34).toLocaleString()} lbs`}
+                  ? `${Math.round(geom.totalAssemblyWeightInAirKg + geom.totalCapacityM3 * 1000).toLocaleString()} kg`
+                  : `${Math.round(geom.totalAssemblyWeightInAirLbs + geom.totalCapacityBbl * 42 * 8.34).toLocaleString()} lbs`}
               </span>
             </div>
 
             <div className="flex items-center justify-between p-2.5 bg-slate-950/60 rounded-lg border border-slate-800/80">
-              <span className="text-slate-400">Weight Filled with 10 ppg Brine</span>
+              <span className="text-slate-400">Total Assembly Filled with 10 ppg Brine</span>
               <span className="font-mono font-bold text-purple-300">
                 {isMetric
-                  ? `${Math.round(geom.totalWeightInAirKg + geom.totalCapacityM3 * 1200).toLocaleString()} kg`
-                  : `${Math.round(geom.totalWeightInAirLbs + geom.totalCapacityBbl * 42 * 10.0).toLocaleString()} lbs`}
+                  ? `${Math.round(geom.totalAssemblyWeightInAirKg + geom.totalCapacityM3 * 1200).toLocaleString()} kg`
+                  : `${Math.round(geom.totalAssemblyWeightInAirLbs + geom.totalCapacityBbl * 42 * 10.0).toLocaleString()} lbs`}
               </span>
             </div>
           </div>

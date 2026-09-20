@@ -16,7 +16,8 @@ import {
   ShieldCheck,
   Check,
   X,
-  Sliders
+  Sliders,
+  Monitor
 } from 'lucide-react';
 import { downloadCoiledTubingCSV } from '../utils/csvExport';
 import { calculateTubingLimits } from '../utils/engineeringCalculations';
@@ -32,6 +33,7 @@ interface HeaderProps {
   historyCount: number;
   onResetDefaults: () => void;
   onPrint: () => void;
+  onOpenDesktopExeModal?: () => void;
   safetyFactor: number;
   onSafetyFactorChange: (sf: number) => void;
   showNominalOverlay: boolean;
@@ -58,6 +60,7 @@ export const Header: React.FC<HeaderProps> = ({
   historyCount,
   onResetDefaults,
   onPrint,
+  onOpenDesktopExeModal,
   safetyFactor,
   onSafetyFactorChange,
   showNominalOverlay,
@@ -413,6 +416,19 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="hidden sm:inline">Export CSV</span>
             <span className="sm:hidden">CSV</span>
           </button>
+
+          {/* Desktop .EXE Package / Export Button */}
+          {onOpenDesktopExeModal && (
+            <button
+              onClick={onOpenDesktopExeModal}
+              className="px-3 py-2 text-xs font-semibold rounded-lg bg-cyan-950/70 hover:bg-cyan-900/80 text-cyan-300 hover:text-cyan-100 border border-cyan-700/60 hover:border-cyan-400 flex items-center gap-1.5 shadow-sm transition-all"
+              title="Package and build standalone offline Windows .EXE desktop application"
+            >
+              <Monitor className="w-4 h-4 text-cyan-400" />
+              <span className="hidden sm:inline">Desktop (.exe)</span>
+              <span className="sm:hidden">.exe</span>
+            </button>
+          )}
 
           {/* Print / Export Job Sheet */}
           <button

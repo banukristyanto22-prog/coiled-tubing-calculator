@@ -14,7 +14,7 @@ import {
   BhaSummaryMetrics
 } from '../types/coiledTubing';
 import { ACHILLES_LCF_MATERIALS } from '../data/presets';
-import { computeBhaSummaryMetrics } from '../data/bhaPresets';
+import { computeBhaSummaryMetrics, calculateSegmentLinearWeight } from '../data/bhaPresets';
 
 // Constants
 export const STEEL_DENSITY_LB_CUFT = 489.54; // lb/ft³
@@ -64,36 +64,66 @@ export interface StringGeometry {
   momentOfInertiaIn4: number;
   polarMomentOfInertiaIn4: number;
   dtRatio: number;
+  // BHA (Bottom Hole Assembly) integration metrics
+  hasBha: boolean;
+  bhaLengthFt: number;
+  bhaLengthM: number;
+  bhaAirWeightLbs: number;
+  bhaAirWeightKg: number;
+  totalAssemblyLengthFt: number;
+  totalAssemblyLengthM: number;
+  totalAssemblyWeightInAirLbs: number;
+  totalAssemblyWeightInAirKg: number;
 }
 
 export function calculateGeometry(ct: CoiledTubingString): StringGeometry {
-  const od = ct.outerDiameterIn;
-  const wt = ct.wallThicknessIn;
-  const id = Math.max(0.01, od - 2 * wt);
+  const od = Math.max(0.01, ct.outerDiameterIn);
+  const wt = Math.max(0.001, Math.min(ct.wallThicknessIn, od * 0.499));
+  const id = Math.max(0.001, od - 2 * wt);
 
-  const metalAreaSqIn = (Math.PI / 4) * (od * od - id * id);
+  const metalAreaSqIn = Math.max(0.001, (Math.PI / 4) * (od * od - id * id));
   const internalAreaSqIn = (Math.PI / 4) * (id * id);
   
   // Standard API 5ST formula for weight in air: 10.69 * (OD - t) * t (lb/ft)
-  const weightInAirLbFt = 10.69 * (od - wt) * wt;
-  const totalWeightInAirLbs = weightInAirLbFt * ct.totalLengthFt;
+  const weightInAirLbFt = Math.max(0, 10.69 * (od - wt) * wt);
+  const safeLength = Math.max(0, ct.totalLengthFt);
+  const totalWeightInAirLbs = weightInAirLbFt * safeLength;
 
   // Capacity in bbl/ft: ID² / 1029.4
   const capacityBblFt = (id * id) / 1029.4;
   const capacityBbl1000Ft = capacityBblFt * 1000;
   const capacityGalFt = (id * id) / 24.51;
-  const totalCapacityBbl = capacityBblFt * ct.totalLengthFt;
+  const totalCapacityBbl = capacityBblFt * safeLength;
 
   // Displacement in bbl/ft: OD² / 1029.4
   const displacementBblFt = (od * od) / 1029.4;
   const displacementBbl1000Ft = displacementBblFt * 1000;
-  const totalDisplacementBbl = displacementBblFt * ct.totalLengthFt;
+  const totalDisplacementBbl = displacementBblFt * safeLength;
 
   // Moment of Inertia I = π/64 * (OD⁴ - ID⁴)
-  const momentOfInertiaIn4 = (Math.PI / 64) * (Math.pow(od, 4) - Math.pow(id, 4));
+  const momentOfInertiaIn4 = Math.max(0.0001, (Math.PI / 64) * (Math.pow(od, 4) - Math.pow(id, 4)));
   const polarMomentOfInertiaIn4 = 2 * momentOfInertiaIn4;
 
-  const dtRatio = od / wt;
+  const dtRatio = wt > 0 ? od / wt : 0;
+
+  // BHA Components Integration
+  let bhaLengthFt = 0;
+  let bhaAirWeightLbs = 0;
+  const hasBha = !!ct.bhaConfig?.enabled && !!ct.bhaConfig.segments && ct.bhaConfig.segments.length > 0;
+
+  if (hasBha && ct.bhaConfig?.segments) {
+    for (const seg of ct.bhaConfig.segments) {
+      const segLen = Math.max(0, seg.lengthFt);
+      const segLinWeight = seg.linearWeightLbFt && seg.linearWeightLbFt > 0
+        ? seg.linearWeightLbFt
+        : calculateSegmentLinearWeight(seg.outerDiameterIn, seg.innerDiameterIn);
+      bhaLengthFt += segLen;
+      bhaAirWeightLbs += segLen * segLinWeight;
+    }
+  }
+
+  const totalAssemblyLengthFt = safeLength + (hasBha ? bhaLengthFt : 0);
+  const totalAssemblyWeightInAirLbs = totalWeightInAirLbs + (hasBha ? bhaAirWeightLbs : 0);
 
   return {
     innerDiameterIn: id,
@@ -116,6 +146,16 @@ export function calculateGeometry(ct: CoiledTubingString): StringGeometry {
     momentOfInertiaIn4,
     polarMomentOfInertiaIn4,
     dtRatio,
+    // BHA metrics
+    hasBha,
+    bhaLengthFt,
+    bhaLengthM: ftToM(bhaLengthFt),
+    bhaAirWeightLbs,
+    bhaAirWeightKg: bhaAirWeightLbs * 0.453592,
+    totalAssemblyLengthFt,
+    totalAssemblyLengthM: ftToM(totalAssemblyLengthFt),
+    totalAssemblyWeightInAirLbs,
+    totalAssemblyWeightInAirKg: totalAssemblyWeightInAirLbs * 0.453592,
   };
 }
 
@@ -673,6 +713,13 @@ export interface WellboreForcesResult {
   surfaceNeutralWeightLbf: number;
   totalWellboreDragLbf: number;
   bhaMetrics?: BhaSummaryMetrics;
+  totalStringLengthFt?: number;
+  totalStringAirWeightLbs?: number;
+  totalStringBuoyedWeightLbs?: number;
+  ctAirWeightLbs?: number;
+  ctBuoyedWeightLbs?: number;
+  bhaAirWeightLbs?: number;
+  bhaBuoyedWeightLbs?: number;
   weightProfile: {
     depthFt: number;
     slackoffLbf: number;
@@ -865,11 +912,12 @@ export function calculateWellboreForces(
 
   const mu = inputs.frictionCoefficientCasing;
 
-  // BHA (Bottom Hole Assembly) configuration metrics
-  const hasBha = !!inputs.bhaConfig?.enabled && !!inputs.bhaConfig.segments && inputs.bhaConfig.segments.length > 0;
+  // BHA (Bottom Hole Assembly) configuration metrics - prioritize inputs.bhaConfig or fallback to ct.bhaConfig
+  const effectiveBhaConfig = inputs.bhaConfig ?? ct.bhaConfig;
+  const hasBha = !!effectiveBhaConfig?.enabled && !!effectiveBhaConfig.segments && effectiveBhaConfig.segments.length > 0;
   const bhaMetrics = hasBha
     ? computeBhaSummaryMetrics(
-        inputs.bhaConfig!.segments,
+        effectiveBhaConfig!.segments,
         ct,
         inputs.wellboreFluidDensityPpg,
         csgId,
@@ -967,7 +1015,29 @@ export function calculateWellboreForces(
         const cosK = Math.cos(incRadK);
 
         const isMidInBha = hasBha && zMid >= bhaStartDepthForThisMd;
-        const localWeightLbFt = isMidInBha ? bhaAvgBuoyedLbFt : buoyedWeightLbFt;
+        let localWeightLbFt = buoyedWeightLbFt;
+
+        if (isMidInBha && effectiveBhaConfig?.segments && effectiveBhaConfig.segments.length > 0) {
+          const offsetIntoBha = zMid - bhaStartDepthForThisMd;
+          let accumFt = 0;
+          let matchedSegment = effectiveBhaConfig.segments[effectiveBhaConfig.segments.length - 1];
+          for (const s of effectiveBhaConfig.segments) {
+            const sLen = Math.max(0.1, s.lengthFt);
+            if (offsetIntoBha >= accumFt && offsetIntoBha <= accumFt + sLen) {
+              matchedSegment = s;
+              break;
+            }
+            accumFt += sLen;
+          }
+          if (matchedSegment) {
+            const linWeight = matchedSegment.linearWeightLbFt && matchedSegment.linearWeightLbFt > 0
+              ? matchedSegment.linearWeightLbFt
+              : calculateSegmentLinearWeight(matchedSegment.outerDiameterIn, matchedSegment.innerDiameterIn);
+            localWeightLbFt = linWeight * buoyancyFactor;
+          } else {
+            localWeightLbFt = bhaAvgBuoyedLbFt;
+          }
+        }
 
         // Gravity normal force:
         const normGrav = localWeightLbFt * sinK * dz;
@@ -1028,6 +1098,13 @@ export function calculateWellboreForces(
       surfaceNeutralWeightLbf,
       totalWellboreDragLbf,
       bhaMetrics,
+      totalStringLengthFt: ct.totalLengthFt + bhaLengthFt,
+      totalStringAirWeightLbs: (geom.weightInAirLbFt * ct.totalLengthFt) + (bhaMetrics?.totalAirWeightLbs ?? 0),
+      totalStringBuoyedWeightLbs: (buoyedWeightLbFt * Math.max(0, inputs.measuredDepthFt - bhaLengthFt)) + bhaBuoyedWeightLbs,
+      ctAirWeightLbs: geom.weightInAirLbFt * ct.totalLengthFt,
+      ctBuoyedWeightLbs: buoyedWeightLbFt * Math.max(0, inputs.measuredDepthFt - bhaLengthFt),
+      bhaAirWeightLbs: bhaMetrics?.totalAirWeightLbs ?? 0,
+      bhaBuoyedWeightLbs: bhaBuoyedWeightLbs,
       weightProfile,
       trajectorySummary: {
         totalMdFt: totalMd,
@@ -1135,6 +1212,13 @@ export function calculateWellboreForces(
     surfaceNeutralWeightLbf,
     totalWellboreDragLbf: dragForceTotal,
     bhaMetrics,
+    totalStringLengthFt: ct.totalLengthFt + bhaLengthFt,
+    totalStringAirWeightLbs: (geom.weightInAirLbFt * ct.totalLengthFt) + (bhaMetrics?.totalAirWeightLbs ?? 0),
+    totalStringBuoyedWeightLbs: (buoyedWeightLbFt * Math.max(0, inputs.measuredDepthFt - bhaLengthFt)) + bhaBuoyedWeightLbs,
+    ctAirWeightLbs: geom.weightInAirLbFt * ct.totalLengthFt,
+    ctBuoyedWeightLbs: buoyedWeightLbFt * Math.max(0, inputs.measuredDepthFt - bhaLengthFt),
+    bhaAirWeightLbs: bhaMetrics?.totalAirWeightLbs ?? 0,
+    bhaBuoyedWeightLbs: bhaBuoyedWeightLbs,
     weightProfile,
   };
 }

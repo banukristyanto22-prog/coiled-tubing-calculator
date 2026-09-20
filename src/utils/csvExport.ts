@@ -1,5 +1,6 @@
-import { CoiledTubingString, UnitSystem, HydraulicsInput, WellboreForcesInput } from '../types/coiledTubing';
+import { CoiledTubingString, UnitSystem, HydraulicsInput, WellboreForcesInput, CalculationHistoryEntry } from '../types/coiledTubing';
 import { DEFAULT_HYDRAULICS, DEFAULT_FORCES } from '../data/presets';
+import { evaluateCalculationSafety } from './safetyEvaluator';
 import {
   calculateGeometry,
   calculateTubingLimits,
@@ -246,3 +247,118 @@ export function downloadCoiledTubingCSV(
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+
+export function generateCalculationHistoryCSV(
+  history: CalculationHistoryEntry[],
+  unitSystem: UnitSystem = 'imperial'
+): string {
+  const isMetric = unitSystem === 'metric';
+  const lines: string[] = [];
+
+  lines.push(row('COILED MATRIX - CALCULATION SNAPSHOTS & AUDIT LOG'));
+  lines.push(row('Export Date', new Date().toISOString()));
+  lines.push(row('Total Snapshots', history.length));
+  lines.push(row('Unit System', isMetric ? 'Metric (SI)' : 'US Oilfield Units'));
+  lines.push('');
+
+  // Column Headers
+  lines.push(
+    row(
+      'Snapshot ID',
+      'Timestamp (ISO)',
+      'Display Time',
+      'Title / Tag',
+      'Source Module',
+      'Safety Status (Pass/Fail)',
+      'Max Safe Utilization (%)',
+      'Governing Check',
+      'Violations Count',
+      'Primary Violation Details',
+      'String Profile Name',
+      'Steel Grade',
+      isMetric ? 'OD (mm)' : 'OD (in)',
+      isMetric ? 'Wall Thickness (mm)' : 'Wall Thickness (in)',
+      isMetric ? 'Inner Diameter (mm)' : 'Inner Diameter (in)',
+      isMetric ? 'Total Length (m)' : 'Total Length (ft)',
+      isMetric ? 'Weight in Air (kg/m)' : 'Weight in Air (lb/ft)',
+      isMetric ? 'Total Weight (kg)' : 'Total Weight (lbs)',
+      'D/t Ratio',
+      isMetric ? 'API Burst Pressure (MPa)' : 'API Burst Pressure (psi)',
+      isMetric ? 'Collapse Pressure (MPa)' : 'Collapse Pressure (psi)',
+      isMetric ? 'Tensile Yield (kN)' : 'Tensile Yield (lbf)',
+      isMetric ? 'Safe Overpull (kN)' : 'Safe Overpull (lbf)',
+      'Estimated Fatigue Trips',
+      'Notes'
+    )
+  );
+
+  history.forEach((item) => {
+    const { metrics, stringSnapshot } = item;
+    const safety = evaluateCalculationSafety(item);
+
+    const od = isMetric ? inToMm(stringSnapshot.outerDiameterIn).toFixed(2) : stringSnapshot.outerDiameterIn.toFixed(3);
+    const wt = isMetric ? inToMm(stringSnapshot.wallThicknessIn).toFixed(2) : stringSnapshot.wallThicknessIn.toFixed(3);
+    const id = isMetric ? inToMm(metrics.innerDiameterIn).toFixed(2) : metrics.innerDiameterIn.toFixed(3);
+    const len = isMetric ? Math.round(ftToM(stringSnapshot.totalLengthFt)) : Math.round(stringSnapshot.totalLengthFt);
+    const wtInAir = isMetric ? (metrics.weightInAirLbFt * 1.48816).toFixed(2) : metrics.weightInAirLbFt.toFixed(2);
+    const totWt = isMetric ? Math.round(metrics.totalWeightLbs * 0.453592) : Math.round(metrics.totalWeightLbs);
+    const burst = isMetric ? psiToMpa(metrics.apiBurstPressurePsi).toFixed(1) : Math.round(metrics.apiBurstPressurePsi);
+    const collapse = isMetric ? psiToMpa(metrics.collapsePressurePsi).toFixed(1) : Math.round(metrics.collapsePressurePsi);
+    const tensile = isMetric ? lbfToKn(metrics.tensileYieldLbf).toFixed(1) : Math.round(metrics.tensileYieldLbf);
+    const overpull = isMetric ? lbfToKn(metrics.safeOverpullLbf).toFixed(1) : Math.round(metrics.safeOverpullLbf);
+
+    lines.push(
+      row(
+        item.id,
+        item.timestamp,
+        item.displayTime,
+        item.title,
+        item.sourceTab,
+        safety.label,
+        safety.maxUtilizationPercent.toFixed(1),
+        safety.governingCheck,
+        safety.violations.length,
+        safety.violations.join('; ') || 'None (All safety checks passed)',
+        stringSnapshot.name,
+        stringSnapshot.grade,
+        od,
+        wt,
+        id,
+        len,
+        wtInAir,
+        totWt,
+        metrics.dtRatio.toFixed(1),
+        burst,
+        collapse,
+        tensile,
+        overpull,
+        metrics.estimatedFatigueLifeTrips || 120,
+        item.notes || ''
+      )
+    );
+  });
+
+  return '\uFEFF' + lines.join('\r\n');
+}
+
+export function downloadCalculationHistoryCSV(
+  history: CalculationHistoryEntry[],
+  unitSystem: UnitSystem = 'imperial'
+): void {
+  const csvContent = generateCalculationHistoryCSV(history, unitSystem);
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+
+  const dateStr = new Date().toISOString().split('T')[0];
+  const filename = `coiled_matrix_calculation_history_${dateStr}.csv`;
+
+  const link = document.createElement('a');
+  link.setAttribute('href', url);
+  link.setAttribute('download', filename);
+  link.style.visibility = 'hidden';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+

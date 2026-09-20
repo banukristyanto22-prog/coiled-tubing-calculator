@@ -31,17 +31,20 @@ import {
 } from 'lucide-react';
 import { FatigueOperationsLog } from './FatigueOperationsLog';
 import { FatigueDetailChart } from './FatigueDetailChart';
+import { JobTypeFatigueSimulator } from './JobTypeFatigueSimulator';
 
 interface FatigueLifeTabProps {
   ct: CoiledTubingString;
   unitSystem: UnitSystem;
   onSelectString?: (ct: CoiledTubingString) => void;
+  onUpdateString?: (updated: CoiledTubingString) => void;
 }
 
 export const FatigueLifeTab: React.FC<FatigueLifeTabProps> = ({
   ct,
   unitSystem,
   onSelectString,
+  onUpdateString,
 }) => {
   const isMetric = unitSystem === 'metric';
 
@@ -52,7 +55,7 @@ export const FatigueLifeTab: React.FC<FatigueLifeTabProps> = ({
   const [internalPressurePsi, setInternalPressurePsi] = useState<number>(3500);
   const [tripsRun, setTripsRun] = useState<number>(28);
   const [showTable1Details, setShowTable1Details] = useState<boolean>(false);
-  const [activeTabSubView, setActiveTabSubView] = useState<'detail' | 'events' | 'curve' | 'welds' | 'operationsLog'>('detail');
+  const [activeTabSubView, setActiveTabSubView] = useState<'jobSimulator' | 'detail' | 'events' | 'curve' | 'welds' | 'operationsLog'>('jobSimulator');
 
   // Calculate Achilles 4.0 Fatigue
   const achilles = useMemo(() => {
@@ -488,6 +491,21 @@ export const FatigueLifeTab: React.FC<FatigueLifeTabProps> = ({
           <div className="flex border-b border-slate-800 text-xs font-medium overflow-x-auto">
             <button
               type="button"
+              onClick={() => setActiveTabSubView('jobSimulator')}
+              className={`pb-2.5 px-3 border-b-2 transition-colors flex items-center gap-1.5 shrink-0 ${
+                activeTabSubView === 'jobSimulator'
+                  ? 'border-amber-400 text-amber-300 font-bold'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Flame className="w-3.5 h-3.5 text-amber-400" />
+              <span>Job Type &amp; Fatigue Update</span>
+              <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                New
+              </span>
+            </button>
+            <button
+              type="button"
               onClick={() => setActiveTabSubView('detail')}
               className={`pb-2.5 px-3 border-b-2 transition-colors flex items-center gap-1.5 shrink-0 ${
                 activeTabSubView === 'detail'
@@ -553,6 +571,17 @@ export const FatigueLifeTab: React.FC<FatigueLifeTabProps> = ({
               </span>
             </button>
           </div>
+
+          {/* Sub-view: Job Type & Fatigue Simulator */}
+          {activeTabSubView === 'jobSimulator' && (
+            <JobTypeFatigueSimulator
+              ct={ct}
+              unitSystem={unitSystem}
+              achilles={achilles}
+              onUpdateString={onUpdateString}
+              onSelectJobPressure={(p) => setInternalPressurePsi(p)}
+            />
+          )}
 
           {/* Sub-view 0: Fatigue Detail Chart (Length Profile) */}
           {activeTabSubView === 'detail' && (

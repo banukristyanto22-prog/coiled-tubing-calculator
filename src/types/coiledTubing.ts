@@ -1,8 +1,8 @@
 export type UnitSystem = 'imperial' | 'metric';
 
-export type TubingGrade = 'CT70' | 'CT80' | 'CT90' | 'CT100' | 'CT110';
+export type TubingGrade = 'CT70' | 'CT80' | 'CT90' | 'CT100' | 'CT110' | 'HS-90';
 
-export type AchillesMaterialGrade = 'QT-700' | 'QT-800' | 'QT-900' | 'QT-1000' | 'QT-1200' | 'HS-90' | 'HS-110';
+export type AchillesMaterialGrade = 'QT-700' | 'QT-800' | 'QT-900' | 'QT-1000' | 'QT-1200' | 'HS-90' | 'HS-110' | 'CT110';
 
 export interface LcfMaterialParameters {
   grade: AchillesMaterialGrade;
@@ -98,9 +98,9 @@ export type WorkingWeldType = 'none' | 'bias' | 'orbital' | 'manual';
 
 export interface UsedCondition {
   enabled: boolean; // false = Nominal / Factory New, true = Used / Real Situation Active
-  wallLossPercent: number; // 0% to 20% (API RP 5C7 retirement threshold is 20% wall loss, i.e., 80% remaining wall)
-  diametralGrowthPercent: number; // % ballooning OD growth (e.g. 0.0% to 3.5%)
-  actualOvalityPercent: number; // field cross-sectional ovality % (e.g. 0.8% to 5.0%)
+  wallLossPercent: number; // 0% to 25% (API RP 5C7 retirement threshold is 20% wall loss, i.e., 80% remaining wall)
+  diametralGrowthPercent: number; // % ballooning OD growth (e.g. 0.0% to 3.5%, CIRCA max: 62.5 thou for <=2", 100 thou for >2")
+  actualOvalityPercent: number; // field cross-sectional ovality % (e.g. 0.8% to 5.0%, API 5C7 max: 5.0%)
   fatigueLifeUsedPercent: number; // accumulated cycle life consumed % (e.g. 0% to 80%)
   corrosionPittingGrade: CorrosionPittingGrade; // 'none' | 'light' | 'moderate' | 'severe'
   hasWeldInSection: boolean; // whether a weld joint is present in the working active section
@@ -108,6 +108,57 @@ export interface UsedCondition {
   weldEfficiencyFactor: number; // e.g. 1.0 (seamless/base), 0.90 (bias weld), 0.80 (orbital weld)
   h2sExposure: boolean; // Sour service H2S exposure derating
   notes?: string;
+  // Published literature / experimental defect parameters (e.g. Liu Shaohu et al. 2021 / Aitken et al. 2019 / CIRCA 16.5)
+  defectDepthMm?: number; // Measured pit defect depth in mm (e.g., 0.5 mm, 1.0 mm, 2.0 mm, 3.0 mm)
+  defectLengthMm?: number; // Pit axial length in mm (e.g., 10 - 13 mm)
+  defectWidthMm?: number; // Pit circumferential width in mm (e.g., 4 - 8 mm)
+  defectAngleDeg?: number; // Pit axial angle (0°, 30°, 60°, 90°)
+  measuredRemainingCycles?: number; // Measured remaining cyclic bends to failure (e.g. 43 cycles @ 35 MPa)
+  testPressureMpa?: number; // Internal pressure during bending (e.g. 35 MPa / 5076 psi)
+  fieldDatasetSource?: string; // Reference citation (e.g. JPSE 198 (2021) 108212, JPSE 182 (2019) 106308, CIRCA v16.5.1)
+  fieldLocationName?: string; // e.g. "Fuling Shale Gas Field", "Vaca Muerta Field", "U.S. Frac Cleanout"
+}
+
+export interface PublishedUsedDataset {
+  id: string;
+  title: string;
+  category: 'field_case' | 'experimental_defect' | 'software_standard';
+  sourceCitation: string;
+  fieldLocation: string;
+  nominalString: {
+    odIn: number;
+    wtIn: number;
+    grade: TubingGrade;
+    totalLengthM: number;
+    totalLengthFt: number;
+  };
+  defectSummary: {
+    pitDepthMm?: number;
+    pitWidthMm?: number;
+    pitLengthMm?: number;
+    pitAngleDeg?: number;
+    wallLossPct: number;
+    ballooningPct: number;
+    ballooningThou?: number;
+    ovalityPct: number;
+    fatigueUsedPct: number;
+    pittingSeverity: CorrosionPittingGrade;
+  };
+  operationalEnvironment: {
+    internalPressureMpa?: number;
+    internalPressurePsi?: number;
+    bendingRadiusMm?: number;
+    bendingRadiusIn?: number;
+    fluidOrSlurry: string;
+    frictionCoefficient?: number;
+  };
+  measuredOutcome: {
+    remainingCycles?: number;
+    tripsRemainingLimit?: number;
+    failureMode: string;
+    criticalFindings: string;
+  };
+  condition: UsedCondition;
 }
 
 export interface CoiledTubingString {
@@ -128,6 +179,7 @@ export interface CoiledTubingString {
   reelWidthIn: number;
   gooseneckRadiusIn: number;
   usedCondition?: UsedCondition; // Real-world field used condition state
+  bhaConfig?: BhaConfiguration; // Downhole Bottom Hole Assembly (BHA) configuration
   // Test certificate / MTR reference if applicable
   certificateRef?: {
     manufacturer: string;
@@ -218,6 +270,128 @@ export interface BhaSummaryMetrics {
   addedSurfaceWeightLbf: number; // Buoyant weight added at bit/end of string
   addedSurfaceDragLbf: number; // Extra normal friction drag caused by BHA
   radialClearanceIn: number; // Radial clearance inside casing for the largest BHA OD
+}
+
+export interface BhaSegmentDragDetail {
+  segmentId: string;
+  name: string;
+  type: BhaToolType;
+  color?: string;
+  startDepthFt: number;
+  endDepthFt: number;
+  lengthFt: number;
+  outerDiameterIn: number;
+  innerDiameterIn: number;
+  radialClearanceIn: number;
+  airWeightLbs: number;
+  buoyedWeightLbs: number;
+  linearWeightLbFt: number;
+  avgInclinationDeg: number;
+  avgDoglegSeverityDegPer100ft: number;
+  gravityNormalForceLbf: number;
+  curvatureNormalForceLbf: number;
+  bendingNormalForceLbf: number;
+  totalNormalForceLbf: number;
+  axialDragRihLbf: number;
+  axialDragPoohLbf: number;
+  dragPerFootLbf: number;
+  percentOfBhaDrag: number;
+  percentOfTotalDrag: number;
+  activeAssistLbf: number;
+  netAxialContributionLbf: number;
+}
+
+export interface TrajectoryDragPoint {
+  depthFt: number;
+  depthM: number;
+  tvdFt: number;
+  tvdM: number;
+  inclinationDeg: number;
+  doglegSeverity: number;
+  isBha: boolean;
+  segmentName?: string;
+  segmentType?: string;
+  normalForceLbf: number;
+  cumulativeDragRihLbf: number;
+  cumulativeDragPoohLbf: number;
+  axialForceRihLbf: number;
+  axialForcePoohLbf: number;
+  axialForceNeutralLbf: number;
+  criticalBucklingLbf: number;
+  helicalBucklingLbf: number;
+}
+
+export interface DragCalculationOptions {
+  frictionCoefficient?: number;
+  tripDirection?: 'rih' | 'pooh' | 'reciprocating';
+  agitatorActive?: boolean;
+  agitatorDragReductionPct?: number; // 0 - 60%
+  tractorActive?: boolean;
+  tractorTractivePullLbf?: number; // 0 - 6000 lbf
+  jettingThrustActive?: boolean;
+  flowRateGpm?: number;
+  appliedWobLbf?: number; // Weight on bit applied at TD
+  wellboreFluidDensityPpg?: number;
+}
+
+export interface DragForceCalculationResult {
+  totalDepthFt: number;
+  bhaLengthFt: number;
+  ctLengthFt: number;
+  buoyancyFactor: number;
+  
+  // Total Drag
+  totalDragRihLbf: number;
+  totalDragPoohLbf: number;
+  totalDragRihKn: number;
+  totalDragPoohKn: number;
+
+  // Split: CT vs BHA
+  ctDragRihLbf: number;
+  ctDragPoohLbf: number;
+  bhaDragRihLbf: number;
+  bhaDragPoohLbf: number;
+  bhaDragSharePercent: number; // BHA drag / Total drag * 100
+  ctDragSharePercent: number;
+
+  // Drag intensity (per unit length)
+  ctAvgDragPerFootLbf: number;
+  bhaAvgDragPerFootLbf: number;
+  bhaDragIntensityRatio: number; // bhaAvgDragPerFoot / ctAvgDragPerFoot
+
+  // Baseline comparison (Bare CT without BHA)
+  bareCtTotalDragLbf: number;
+  dragIncreaseDueToBhaLbf: number;
+  dragIncreasePercent: number;
+
+  // Surface hookload with drag
+  surfaceStaticHangingWeightLbf: number;
+  surfaceSlackoffHookloadLbf: number;
+  surfacePickupHookloadLbf: number;
+  surfaceSlackoffHookloadKn: number;
+  surfacePickupHookloadKn: number;
+
+  // Critical Limits & Buckling
+  effectiveLockupDepthFt: number;
+  isLockedUp: boolean;
+  lockupSafetyMarginFt: number;
+  maxAllowableWobBeforeLockupLbf: number;
+
+  // Active assists
+  totalTractorPullLbf: number;
+  totalJettingThrustLbf: number;
+  totalAgitatorReductionLbf: number;
+
+  // Detailed lists
+  bhaSegmentsDetail: BhaSegmentDragDetail[];
+  trajectoryProfile: TrajectoryDragPoint[];
+  
+  // Trajectory Summary
+  trajectoryType: 'custom_survey' | 'constant';
+  maxInclinationDeg: number;
+  maxDoglegSeverity: number;
+  totalTvdFt: number;
+  horizontalReachFt: number;
 }
 
 export interface WellboreForcesInput {
@@ -346,6 +520,30 @@ export interface FieldFatigueDataset {
   notes?: string;
 }
 
+export type SafetyStatusType = 'pass' | 'fail';
+
+export interface SafetyCheckDetail {
+  id: string;
+  name: string;
+  actual: string;
+  limit: string;
+  passed: boolean;
+  utilizationPercent: number;
+  message?: string;
+}
+
+export interface CalculationSafetyEvaluation {
+  status: SafetyStatusType;
+  label: 'PASS' | 'FAIL';
+  maxUtilizationPercent: number;
+  governingCheck: string;
+  primaryViolation?: string;
+  violations: string[];
+  safetyChecks: SafetyCheckDetail[];
+  safetyFactor: number;
+  summaryText: string;
+}
+
 export interface CalculationHistoryEntry {
   id: string;
   timestamp: string; // ISO string
@@ -356,9 +554,12 @@ export interface CalculationHistoryEntry {
   metrics: CalculationMetricsSummary;
   notes?: string;
   isBookmarked?: boolean;
+  safetyStatus?: SafetyStatusType;
+  safetyEvaluation?: CalculationSafetyEvaluation;
 }
 
 export interface TfaDataPoint {
+  id?: string;
   depthM: number;
   depthFt: number;
   expectedPohLbf: number;
@@ -369,6 +570,11 @@ export interface TfaDataPoint {
   eWeightLbf?: number; // Actual measured weight
   operation?: 'RIH' | 'POH' | 'WIPER' | 'TAG_BOTTOM' | 'STATIC';
   speedMPerMin?: number;
+  whpPsi?: number;
+  notes?: string;
+  deltaLbf?: number; // Actual - Expected target weight
+  backCalculatedFriction?: number; // Apparent friction coefficient μ
+  safetyMarginLbf?: number; // Margin to yield/OPLIM
 }
 
 export interface TfaChartConfig {
@@ -380,5 +586,130 @@ export interface TfaChartConfig {
   frictionOpenHole: number;
   whpPsi: number;
   fluidDensityPpg: number;
+  targetDepthM?: number;
+  wellTrajectory?: 'vertical' | 'deviated' | 'horizontal' | 'deep_gas';
+  maxInclinationDeg?: number;
+  kickoffDepthM?: number;
+  wellPad?: string;
+  operator?: string;
 }
+
+// ==========================================
+// CIRCA™ & JPSE Literature Engineering Types
+// ==========================================
+
+export interface CircaFrictionPreset {
+  id: string;
+  name: string;
+  typical: number;
+  min: number;
+  max: number;
+  description: string;
+  category: 'pipe' | 'liner' | 'screen' | 'open_hole' | 'scale';
+}
+
+export interface CircaInjectorSpec {
+  model: string;
+  manufacturer: string;
+  pullCapacityLbf: number;
+  snubCapacityLbf: number;
+  distanceInjectorStripperIn: number;
+  description: string;
+}
+
+export interface CircaScaleMillingSpec {
+  material: string;
+  formula: string;
+  recommendedImpactPressurePsi: number;
+  hardnessMohs: string;
+  recommendedSolvent: string;
+  description: string;
+}
+
+export interface CircaProppantMeshSpec {
+  apiMesh: number;
+  sizeThou: number;
+  sizeMicron: number;
+  bulkDensityLbfGal: number;
+  specificGravity: number;
+  description: string;
+}
+
+export interface CtPitDefectInput {
+  pitDepthMm: number; // c_0 in mm (e.g. 0.5 - 3.0 mm)
+  pitWidthMm: number; // b in mm (e.g. 4 - 8 mm)
+  pitLengthMm: number; // a in mm (e.g. 10 - 13 mm)
+  pitAngleDeg: number; // alpha: 0 deg (axial) to 90 deg (transverse)
+  internalPressureMpa: number; // P_2 in MPa (e.g. 35 MPa)
+  bendingRadiusMm: number; // R' in mm (e.g. 1219 mm / 48 in)
+  outerDiameterMm?: number; // D in mm (e.g. 50.8 mm)
+  wallThicknessMm?: number; // t in mm (e.g. 4.4 mm)
+  grade?: string; // e.g. CT110, QT900
+}
+
+export interface CtPitDefectFatigueResult {
+  defectDepthRatioPercent: number;
+  correctionFactorPhi: number;
+  radialStressMpa: number;
+  circumferentialStressMpa: number;
+  axialStressMpa: number;
+  equivalentPlasticStrain: number;
+  maxShearStrain: number;
+  normalStrain: number;
+  intactCyclesToFailure: number;
+  defectiveCyclesToFailure: number;
+  lifeReductionPercent: number;
+  safeRemainingTrips: number;
+  governingFactor: string;
+  sensitivityRanking: { factor: string; rank: number; effect: string; rangeR: number }[];
+}
+
+export interface SensitivityYieldPoint {
+  yieldStrengthPsi: number;
+  yieldStrengthMpa: number;
+  yieldKsi: number;
+  gradeEquivalent: string;
+  safeTensileLbf: number;
+  safeTensileKn: number;
+  nominalTensileLbf: number;
+  nominalTensileKn: number;
+  safeBurstPsi: number;
+  safeBurstBar: number;
+  nominalBurstPsi: number;
+  nominalBurstBar: number;
+  apiBurstPsi: number;
+  apiBurstBar: number;
+  safeCollapsePsi: number;
+  safeCollapseBar: number;
+  nominalCollapsePsi: number;
+  nominalCollapseBar: number;
+  biaxialTensionAtWorkingPressureLbf: number;
+  biaxialTensionAtWorkingPressureKn: number;
+  tensileGainPercent: number;
+  burstGainPercent: number;
+  collapseGainPercent: number;
+  envelopeAreaIndex: number;
+}
+
+export interface MultiStringComparisonSeries {
+  id: string;
+  name: string;
+  shortName: string;
+  grade: string;
+  color: string;
+  outerDiameterIn: number;
+  wallThicknessIn: number;
+  metalAreaSqIn: number;
+  nominalYieldPsi: number;
+  isActiveString?: boolean;
+}
+
+export interface MultiStringYieldPoint {
+  yieldStrengthPsi: number;
+  yieldStrengthMpa: number;
+  yieldKsi: number;
+  gradeEquivalent: string;
+  [key: string]: number | string;
+}
+
 

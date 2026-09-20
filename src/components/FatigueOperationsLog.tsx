@@ -66,6 +66,20 @@ const SEED_OPERATIONS_TEMPLATE: Omit<
   'id' | 'fatigueUnitsConsumed' | 'cumulativeFatigueUnits' | 'cumulativeBendingCycles'
 >[] = [
   {
+    date: '2025-05-26',
+    wellName: 'PEP Zone 14- OCD',
+    category: 'cleanout',
+    description: 'COSL Reel-Trak Cerberus™ 14.5.16 Job (Pertamina Z-14): 15,659 running ft',
+    maxDepthFt: 11275,
+    maxDepthM: 3437,
+    circulatingPressurePsi: 0,
+    circulatingPressureBar: 0,
+    trips: 1,
+    reciprocations: 3,
+    bendingCycles: 24,
+    notes: 'Cerberus™ 14.5.16 locked job: 1.05% max fatigue, 15,659 running ft. 24 bending events @ 6,585 ft from free end. Operator: COSL PO on 5/26/2025.',
+  },
+  {
     date: '2026-01-14',
     wellName: 'Permian Alpha-1',
     category: 'cleanout',
@@ -358,8 +372,8 @@ export const FatigueOperationsLog: React.FC<FatigueOperationsLogProps> = ({
         cycles: op.cumulativeBendingCycles,
         well: op.wellName,
         category: op.category,
-        pressure: isMetric ? `${op.circulatingPressureBar} bar` : `${op.circulatingPressurePsi.toLocaleString()} psi`,
-        depth: isMetric ? `${op.maxDepthM.toLocaleString()} m` : `${op.maxDepthFt.toLocaleString()} ft`,
+        pressure: isMetric ? `${op.circulatingPressureBar ?? 0} bar` : `${(op.circulatingPressurePsi ?? 0).toLocaleString()} psi`,
+        depth: isMetric ? `${(op.maxDepthM ?? 0).toLocaleString()} m` : `${(op.maxDepthFt ?? 0).toLocaleString()} ft`,
       })),
     ];
   }, [recalculatedOperations, isMetric]);
@@ -699,7 +713,7 @@ export const FatigueOperationsLog: React.FC<FatigueOperationsLogProps> = ({
             <Layers className="w-3.5 h-3.5 text-cyan-400" />
           </div>
           <div className="text-xl font-bold font-mono text-white">
-            {totalCumulativeCycles.toLocaleString()} rev
+            {(totalCumulativeCycles ?? 0).toLocaleString()} rev
           </div>
           <div className="text-[11px] text-slate-500 mt-1">
             Across reel & guide arch reversals
@@ -1057,10 +1071,10 @@ export const FatigueOperationsLog: React.FC<FatigueOperationsLogProps> = ({
                         )}
                       </td>
                       <td className="py-2 px-3 text-slate-300 whitespace-nowrap">
-                        {isMetric ? `${op.maxDepthM.toLocaleString()} m` : `${op.maxDepthFt.toLocaleString()} ft`}
+                        {isMetric ? `${(op.maxDepthM ?? 0).toLocaleString()} m` : `${(op.maxDepthFt ?? 0).toLocaleString()} ft`}
                       </td>
                       <td className="py-2 px-3 text-amber-400 whitespace-nowrap">
-                        {isMetric ? `${op.circulatingPressureBar} bar` : `${op.circulatingPressurePsi.toLocaleString()} psi`}
+                        {isMetric ? `${op.circulatingPressureBar ?? 0} bar` : `${(op.circulatingPressurePsi ?? 0).toLocaleString()} psi`}
                       </td>
                       <td className="py-2 px-3 text-slate-300 whitespace-nowrap">
                         <span className="text-white font-bold">{op.trips}</span> trip{op.trips !== 1 ? 's' : ''}
@@ -1127,7 +1141,7 @@ export const FatigueOperationsLog: React.FC<FatigueOperationsLogProps> = ({
                     {totalCumulativeTrips} Trips
                   </td>
                   <td className="py-2.5 px-3 font-bold text-white whitespace-nowrap">
-                    {totalCumulativeCycles.toLocaleString()} rev
+                    {(totalCumulativeCycles ?? 0).toLocaleString()} rev
                   </td>
                   <td className="py-2.5 px-3 text-right font-bold text-slate-400">
                     &mdash;

@@ -22,13 +22,91 @@ interface ReelCapacityTabProps {
   unitSystem: UnitSystem;
 }
 
+export interface ReelModelPreset {
+  id: string;
+  name: string;
+  manufacturer: string;
+  flangeDiaIn: number;
+  coreDiaIn: number;
+  widthIn: number;
+  tareWeightLbs: number;
+  badge: string;
+  description: string;
+}
+
+export const REEL_PRESETS: ReelModelPreset[] = [
+  {
+    id: 'shinda-ct-ocd',
+    name: 'Shinda CT-OCD (Pertamina PEP Zone 14)',
+    manufacturer: 'Shinda (Commissioned 9/27/2022)',
+    flangeDiaIn: 148.0,
+    coreDiaIn: 92.0,
+    widthIn: 71.0,
+    tareWeightLbs: 6173,
+    badge: '148" × 92" × 71" • 6,173 lbf Tare',
+    description: 'COSL Cerberus™ 14.5.16 Reel-Trak report: 148" Flange OD, 92" Drum Core, 71" Width between flanges, 6,173 lbf empty tare weight.',
+  },
+  {
+    id: 'shinda-std-128',
+    name: 'Shinda Standard 128" x 72" (MTR Reference)',
+    manufacturer: 'Shinda Creative Oil & Gas',
+    flangeDiaIn: 128.0,
+    coreDiaIn: 72.0,
+    widthIn: 71.6,
+    tareWeightLbs: 7500,
+    badge: '128" × 72" × 71.6" • 7,500 lbf Tare',
+    description: 'Factory shipping reel: 3,251 mm (128") Flange OD, 1,828 mm (72") Drum Core, 1,818 mm (71.6") Width.',
+  },
+  {
+    id: 'qt-std-144',
+    name: 'Quality Tubing Standard 144" Field Reel',
+    manufacturer: 'Quality Tubing (NOV)',
+    flangeDiaIn: 144.0,
+    coreDiaIn: 76.0,
+    widthIn: 80.0,
+    tareWeightLbs: 8500,
+    badge: '144" × 76" × 80" • 8,500 lbf Tare',
+    description: 'Standard workover reel for 1.750" and 2.000" strings up to 22,000 ft.',
+  },
+  {
+    id: 'offshore-erd-168',
+    name: 'Offshore High-Capacity 168" ERD Reel',
+    manufacturer: 'Stewart & Stevenson / Hydra Rig',
+    flangeDiaIn: 168.0,
+    coreDiaIn: 102.0,
+    widthIn: 92.0,
+    tareWeightLbs: 14500,
+    badge: '168" × 102" × 92" • 14,500 lbf Tare',
+    description: 'Deep horizontal offshore spool with large 102" drum core to minimize extreme bending fatigue.',
+  },
+  {
+    id: 'thru-tubing-110',
+    name: 'Compact Thru-Tubing 110" Reel',
+    manufacturer: 'Texas Cold Drawn / Custom',
+    flangeDiaIn: 110.0,
+    coreDiaIn: 60.0,
+    widthIn: 58.0,
+    tareWeightLbs: 4500,
+    badge: '110" × 60" × 58" • 4,500 lbf Tare',
+    description: 'Compact trailer or skid mount for 1.250" thru-tubing cleanout strings.',
+  },
+];
+
 export const ReelCapacityTab: React.FC<ReelCapacityTabProps> = ({
   ct,
   onChangeString,
   unitSystem,
 }) => {
   const isMetric = unitSystem === 'metric';
-  const [tareWeightLbs, setTareWeightLbs] = useState<number>(8500);
+  const isOcdReel = ct.reelCoreDiameterIn === 92 && ct.reelFlangeDiameterIn === 148;
+  const [tareWeightLbs, setTareWeightLbs] = useState<number>(() => (isOcdReel ? 6173 : 8500));
+
+  // Sync tare weight when string changes to/from OCD reel
+  React.useEffect(() => {
+    if (ct.reelCoreDiameterIn === 92 && ct.reelFlangeDiameterIn === 148) {
+      setTareWeightLbs(6173);
+    }
+  }, [ct.reelCoreDiameterIn, ct.reelFlangeDiameterIn]);
 
   const spooling = calculateReelCapacity(ct, tareWeightLbs);
 
@@ -38,6 +116,24 @@ export const ReelCapacityTab: React.FC<ReelCapacityTabProps> = ({
       [field]: val,
     });
   };
+
+  const handleSelectReelPreset = (presetId: string) => {
+    const p = REEL_PRESETS.find((item) => item.id === presetId);
+    if (!p) return;
+    setTareWeightLbs(p.tareWeightLbs);
+    onChangeString({
+      ...ct,
+      reelCoreDiameterIn: p.coreDiaIn,
+      reelFlangeDiameterIn: p.flangeDiaIn,
+      reelWidthIn: p.widthIn,
+    });
+  };
+
+  const activeReelPresetId = REEL_PRESETS.find(
+    (p) =>
+      Math.abs(p.coreDiaIn - ct.reelCoreDiameterIn) < 0.5 &&
+      Math.abs(p.flangeDiaIn - ct.reelFlangeDiameterIn) < 0.5
+  )?.id || 'custom';
 
   return (
     <div className="space-y-6">
@@ -110,14 +206,45 @@ export const ReelCapacityTab: React.FC<ReelCapacityTabProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left Col: Spool Geometry Inputs */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
-          <div className="flex items-center gap-2 pb-3 border-b border-slate-800">
-            <Disc className="w-5 h-5 text-cyan-400" />
-            <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-              Reel Spool Dimensions
-            </h3>
+          <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+            <div className="flex items-center gap-2">
+              <Disc className="w-5 h-5 text-cyan-400" />
+              <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+                Reel Spool Dimensions
+              </h3>
+            </div>
+            {isOcdReel && (
+              <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-950/70 text-cyan-300 border border-cyan-800 font-mono">
+                COSL CT-OCD
+              </span>
+            )}
           </div>
 
-          <div className="space-y-3.5 text-xs">
+          {/* Quick Reel Model Preset Selector */}
+          <div>
+            <label className="text-slate-400 block mb-1 text-xs">
+              Industry Reel Preset
+            </label>
+            <select
+              value={activeReelPresetId}
+              onChange={(e) => handleSelectReelPreset(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs font-mono focus:border-cyan-500 focus:outline-none"
+            >
+              {REEL_PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.badge})
+                </option>
+              ))}
+              <option value="custom">Custom Dimensions...</option>
+            </select>
+            {activeReelPresetId !== 'custom' && (
+              <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                {REEL_PRESETS.find((p) => p.id === activeReelPresetId)?.description}
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-3.5 text-xs pt-1 border-t border-slate-800/60">
             {/* Core / Drum Diameter */}
             <div>
               <label className="text-slate-400 block mb-1">

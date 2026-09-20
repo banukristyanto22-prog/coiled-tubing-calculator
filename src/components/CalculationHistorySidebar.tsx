@@ -9,6 +9,10 @@ import {
 } from '../utils/engineeringCalculations';
 import { SideBySideComparisonModal } from './SideBySideComparisonModal';
 import { HistorySparkline } from './HistorySparkline';
+import { CalculationSafetyBadge } from './CalculationSafetyBadge';
+import { HistoryParameterTrendChart } from './HistoryParameterTrendChart';
+import { evaluateCalculationSafety } from '../utils/safetyEvaluator';
+import { downloadCalculationHistoryCSV } from '../utils/csvExport';
 import {
   History,
   X,
@@ -32,11 +36,13 @@ import {
   Sparkles,
   Download,
   AlertCircle,
+  AlertTriangle,
   FileSpreadsheet,
   Check,
   ChevronRight,
   Clock,
-  Layers
+  Layers,
+  Printer
 } from 'lucide-react';
 
 interface CalculationHistorySidebarProps {
@@ -48,6 +54,7 @@ interface CalculationHistorySidebarProps {
   onLoadString: (ct: CoiledTubingString, targetTab?: string) => void;
   history: CalculationHistoryEntry[];
   onUpdateHistory: (updated: CalculationHistoryEntry[]) => void;
+  onBatchPrint?: () => void;
 }
 
 export const CalculationHistorySidebar: React.FC<CalculationHistorySidebarProps> = ({
@@ -59,10 +66,13 @@ export const CalculationHistorySidebar: React.FC<CalculationHistorySidebarProps>
   onLoadString,
   history,
   onUpdateHistory,
+  onBatchPrint,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterBookmarkedOnly, setFilterBookmarkedOnly] = useState(false);
   const [filterSourceTab, setFilterSourceTab] = useState<string>('all');
+  const [filterSafety, setFilterSafety] = useState<'all' | 'pass' | 'fail'>('all');
+  const [highlightedEntryId, setHighlightedEntryId] = useState<string | null>(null);
   const [selectedIdsForCompare, setSelectedIdsForCompare] = useState<string[]>([]);
   const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
   const [comparePair, setComparePair] = useState<[CalculationHistoryEntry, CalculationHistoryEntry] | null>(null);
@@ -72,23 +82,63 @@ export const CalculationHistorySidebar: React.FC<CalculationHistorySidebarProps>
 
   const isMetric = unitSystem === 'metric';
 
+  // Compute safety counts for quick filter pills
+  const safetyCounts = useMemo(() => {
+    let pass = 0;
+    let fail = 0;
+    history.forEach((item) => {
+      const evaluation = evaluateCalculationSafety(item);
+      if (evaluation.status === 'pass') {
+        pass++;
+      } else {
+        fail++;
+      }
+    });
+    return { pass, fail };
+  }, [history]);
+
   // Filter history entries
   const filteredHistory = useMemo(() => {
     return history.filter((item) => {
       if (filterBookmarkedOnly && !item.isBookmarked) return false;
       if (filterSourceTab !== 'all' && item.sourceTab !== filterSourceTab) return false;
+
+      if (filterSafety !== 'all') {
+        const evaluation = evaluateCalculationSafety(item);
+        if (evaluation.status !== filterSafety) return false;
+      }
+
       if (!searchQuery.trim()) return true;
 
       const q = searchQuery.toLowerCase();
+      const stringGrade = (item.stringSnapshot.grade || (item.stringSnapshot as any).materialGrade || '').toLowerCase();
       return (
         item.title.toLowerCase().includes(q) ||
         item.stringSnapshot.name.toLowerCase().includes(q) ||
-        item.stringSnapshot.materialGrade.toLowerCase().includes(q) ||
+        stringGrade.includes(q) ||
         item.sourceTab.toLowerCase().includes(q) ||
         (item.notes && item.notes.toLowerCase().includes(q))
       );
     });
-  }, [history, filterBookmarkedOnly, filterSourceTab, searchQuery]);
+  }, [history, filterBookmarkedOnly, filterSourceTab, filterSafety, searchQuery]);
+
+  // Handle CSV Download
+  const handleExportCSV = () => {
+    if (history.length === 0) return;
+    downloadCalculationHistoryCSV(history, unitSystem);
+  };
+
+  // Jump to specific entry from mini trend chart
+  const handleJumpToEntry = (id: string) => {
+    setHighlightedEntryId(id);
+    const element = document.getElementById(`history-card-${id}`);
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    setTimeout(() => {
+      setHighlightedEntryId((curr) => (curr === id ? null : curr));
+    }, 3000);
+  };
 
   // Handle manual snapshot creation
   const handleTakeSnapshot = (title?: string) => {
@@ -201,8 +251,9 @@ export const CalculationHistorySidebar: React.FC<CalculationHistorySidebarProps>
       wallThicknessIn: 0.175,
       yieldStrengthPsi: 100000,
       tensileStrengthPsi: 110000,
+      grade: 'CT100',
       materialGrade: 'CT100',
-      strips: currentString.strips.map((s) => ({
+      strips: (currentString.strips || []).map((s) => ({
         ...s,
         wallThicknessIn: 0.175,
         yieldStrengthPsi: 100000,
@@ -224,6 +275,7 @@ export const CalculationHistorySidebar: React.FC<CalculationHistorySidebarProps>
       wallThicknessIn: 0.190,
       totalLengthFt: 18500,
       yieldStrengthPsi: 90000,
+      grade: 'CT90',
       materialGrade: 'CT90',
       strips: [
         {
@@ -348,6 +400,33 @@ export const CalculationHistorySidebar: React.FC<CalculationHistorySidebarProps>
           </div>
 
           <div className="flex items-center gap-1.5">
+            {onBatchPrint && (
+              <button
+                type="button"
+                onClick={onBatchPrint}
+                disabled={history.length === 0}
+                className="p-1.5 px-2.5 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 hover:text-amber-200 border border-amber-500/40 disabled:opacity-40 disabled:cursor-not-allowed font-semibold text-xs flex items-center gap-1.5 transition-all shadow-xs"
+                title="Batch print all bookmarked calculation job sheets into a single PDF"
+              >
+                <Printer className="w-3.5 h-3.5 text-amber-400" />
+                <span className="hidden sm:inline">Batch Print</span>
+                {history.filter((h) => h.isBookmarked).length > 0 && (
+                  <span className="px-1 py-0.2 rounded-full bg-amber-500/30 text-amber-200 text-[10px] font-mono font-bold">
+                    {history.filter((h) => h.isBookmarked).length}
+                  </span>
+                )}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handleExportCSV}
+              disabled={history.length === 0}
+              className="p-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-200 hover:text-white font-semibold text-xs flex items-center gap-1.5 border border-slate-700 transition-all shadow-xs"
+              title="Download CSV export of saved calculation snapshots for external analysis"
+            >
+              <Download className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="hidden sm:inline">Download CSV</span>
+            </button>
             <button
               type="button"
               onClick={() => handleTakeSnapshot()}
@@ -511,6 +590,38 @@ export const CalculationHistorySidebar: React.FC<CalculationHistorySidebarProps>
               <span>Starred</span>
             </button>
 
+            {/* Pass Filter */}
+            <button
+              type="button"
+              onClick={() => setFilterSafety((p) => (p === 'pass' ? 'all' : 'pass'))}
+              className={`px-2 py-0.5 rounded-full border transition-all flex items-center gap-1 shrink-0 ${
+                filterSafety === 'pass'
+                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 font-bold'
+                  : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
+              }`}
+              title="Filter calculation snapshots that passed all safety criteria"
+            >
+              <ShieldCheck className="w-3 h-3 text-emerald-400" />
+              <span>Pass ({safetyCounts.pass})</span>
+            </button>
+
+            {/* Fail / Limit Exceeded Filter */}
+            <button
+              type="button"
+              onClick={() => setFilterSafety((p) => (p === 'fail' ? 'all' : 'fail'))}
+              className={`px-2 py-0.5 rounded-full border transition-all flex items-center gap-1 shrink-0 ${
+                filterSafety === 'fail'
+                  ? 'bg-rose-500/20 text-rose-300 border-rose-500/40 font-bold'
+                  : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
+              }`}
+              title="Filter calculation snapshots that exceeded allowable safety bounds"
+            >
+              <AlertTriangle className="w-3 h-3 text-rose-400" />
+              <span>Violations ({safetyCounts.fail})</span>
+            </button>
+
+            <span className="text-slate-700 mx-0.5">|</span>
+
             {['all', 'specs', 'envelope', 'hydraulics', 'forces', 'fatigue'].map((tab) => (
               <button
                 key={tab}
@@ -530,6 +641,18 @@ export const CalculationHistorySidebar: React.FC<CalculationHistorySidebarProps>
 
         {/* History Item Cards List */}
         <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
+          {/* Visual Trend Mini-Chart across saved calculation entries */}
+          {history.length >= 2 && (
+            <div className="mb-2">
+              <HistoryParameterTrendChart
+                entries={filteredHistory.length >= 2 ? filteredHistory : history}
+                unitSystem={unitSystem}
+                onSelectEntry={handleJumpToEntry}
+                selectedEntryId={highlightedEntryId}
+              />
+            </div>
+          )}
+
           {filteredHistory.length === 0 ? (
             <div className="text-center py-12 px-4 border border-dashed border-slate-800 rounded-2xl bg-slate-950/40 my-4">
               <div className="w-12 h-12 mx-auto rounded-full bg-slate-800/80 flex items-center justify-center text-slate-500 mb-3">
@@ -539,7 +662,7 @@ export const CalculationHistorySidebar: React.FC<CalculationHistorySidebarProps>
                 No calculation snapshots found
               </h4>
               <p className="text-[11px] text-slate-400 max-w-xs mx-auto mb-4">
-                {searchQuery || filterBookmarkedOnly || filterSourceTab !== 'all'
+                {searchQuery || filterBookmarkedOnly || filterSourceTab !== 'all' || filterSafety !== 'all'
                   ? 'No results match your active search filters.'
                   : 'Take snapshots of your coiled tubing configurations and simulation runs to compare metrics side-by-side.'}
               </p>
@@ -566,22 +689,28 @@ export const CalculationHistorySidebar: React.FC<CalculationHistorySidebarProps>
             filteredHistory.map((item) => {
               const isSelected = selectedIdsForCompare.includes(item.id);
               const isJustRestored = justRestoredId === item.id;
+              const isHighlighted = highlightedEntryId === item.id;
+              const safety = evaluateCalculationSafety(item);
               const { metrics } = item;
+              const stringGrade = item.stringSnapshot.grade || (item.stringSnapshot as any).materialGrade || 'CT90';
 
               return (
                 <div
+                  id={`history-card-${item.id}`}
                   key={item.id}
                   className={`p-3 rounded-xl border transition-all relative ${
-                    isJustRestored
+                    isHighlighted
+                      ? 'bg-cyan-950/40 border-cyan-400 ring-2 ring-cyan-400 shadow-xl shadow-cyan-950/60'
+                      : isJustRestored
                       ? 'bg-emerald-950/40 border-emerald-500 shadow-md shadow-emerald-950/50'
                       : isSelected
                       ? 'bg-cyan-950/30 border-cyan-500/60 shadow-md shadow-cyan-950/30'
                       : 'bg-slate-950/80 hover:bg-slate-800/40 border-slate-800 hover:border-slate-700'
                   }`}
                 >
-                  {/* Card Top Row: Checkbox, Source, Time, Star, Delete */}
+                  {/* Card Top Row: Checkbox, Source, Safety Badge, Time, Star, Delete */}
                   <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <button
                         type="button"
                         onClick={(e) => handleToggleSelectForCompare(item.id, e)}
@@ -598,6 +727,9 @@ export const CalculationHistorySidebar: React.FC<CalculationHistorySidebarProps>
                       </button>
 
                       {renderSourceTabBadge(item.sourceTab)}
+
+                      {/* Visual Pass/Fail Status Indicator */}
+                      <CalculationSafetyBadge evaluation={safety} size="xs" />
 
                       <span className="text-[10px] font-mono text-slate-500">
                         {item.displayTime}
@@ -640,6 +772,17 @@ export const CalculationHistorySidebar: React.FC<CalculationHistorySidebarProps>
                     )}
                   </div>
 
+                  {/* Limit Violation Notice if Fail */}
+                  {safety.status === 'fail' && safety.primaryViolation && (
+                    <div className="mb-2 px-2 py-1 bg-rose-950/50 border border-rose-800/60 rounded-lg text-[10px] text-rose-300 flex items-start gap-1.5 font-mono">
+                      <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
+                      <div className="flex-1 leading-tight">
+                        <span className="font-bold text-rose-200">Violation: </span>
+                        <span>{safety.primaryViolation}</span>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Key Metrics Chips Matrix */}
                   <div className="grid grid-cols-3 gap-1.5 py-1.5 px-2 bg-slate-900/90 rounded-lg border border-slate-800/80 text-[10px] font-mono mb-2.5">
                     <div>
@@ -651,7 +794,7 @@ export const CalculationHistorySidebar: React.FC<CalculationHistorySidebarProps>
                     <div>
                       <span className="text-slate-500 block text-[9px]">GRADE</span>
                       <span className="text-cyan-300 font-bold">
-                        {item.stringSnapshot.materialGrade}
+                        {stringGrade}
                       </span>
                     </div>
                     <div>
@@ -730,7 +873,7 @@ export const CalculationHistorySidebar: React.FC<CalculationHistorySidebarProps>
                     </div>
 
                     <span className="text-[10px] text-slate-500 font-mono">
-                      {item.stringSnapshot.totalLengthFt.toLocaleString()}&apos;
+                      {(item.stringSnapshot?.totalLengthFt ?? 0).toLocaleString()}&apos;
                     </span>
                   </div>
                 </div>

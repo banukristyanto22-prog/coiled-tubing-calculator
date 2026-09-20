@@ -1,5 +1,7 @@
 import React from 'react';
 import { CoiledTubingString, UnitSystem, CalculationHistoryEntry } from '../types/coiledTubing';
+import { CalculationSafetyBadge } from './CalculationSafetyBadge';
+import { evaluateCalculationSafety } from '../utils/safetyEvaluator';
 import {
   calculateGeometry,
   calculateTubingLimits,
@@ -58,6 +60,9 @@ export const SideBySideComparisonModal: React.FC<SideBySideComparisonModalProps>
 
   const limitsA = calculateTubingLimits(ctA);
   const limitsB = calculateTubingLimits(ctB);
+
+  const safetyA = evaluateCalculationSafety(entryA);
+  const safetyB = evaluateCalculationSafety(entryB);
 
   // Helper to render delta badge
   const renderDelta = (
@@ -192,6 +197,9 @@ export const SideBySideComparisonModal: React.FC<SideBySideComparisonModalProps>
             <div className="font-bold text-white text-xs sm:text-sm truncate" title={entryA.title}>
               {entryA.title}
             </div>
+            <div className="mt-1">
+              <CalculationSafetyBadge evaluation={safetyA} size="xs" />
+            </div>
             <button
               type="button"
               onClick={() => {
@@ -215,6 +223,9 @@ export const SideBySideComparisonModal: React.FC<SideBySideComparisonModalProps>
             </div>
             <div className="font-bold text-white text-xs sm:text-sm truncate" title={entryB.title}>
               {entryB.title}
+            </div>
+            <div className="mt-1">
+              <CalculationSafetyBadge evaluation={safetyB} size="xs" />
             </div>
             <button
               type="button"
